@@ -13,7 +13,7 @@
     "desktop": "electron .",
     "dist": "electron-builder --mac dmg",
     "check": "node scripts/check-syntax.mjs",
-    "dist:all": "electron-builder --mac dmg zip --arm64 --x64",
+    "dist:all": "electron-builder --mac dmg zip --arm64 --x64 --publish never",
     "sign:check": "bash scripts/check-signing.sh"
   },
   "engines": {
