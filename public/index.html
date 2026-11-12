@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Bot Team</title>
+    <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="titlebar" aria-hidden="true"></div>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="side-top">
+          <label class="search-box">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.2" stroke="currentColor" stroke-width="1.7"/>
+              <path d="m16 16 4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+            <input id="searchInput" placeholder="搜索 Bot / 群聊（回车全局搜索）" autocomplete="off" spellcheck="false" />
+          </label>
+          <button class="icon-btn add" id="newBtn" title="新建 Bot 或群聊">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="self-card" id="selfCard" title="点击和领导 Bot 对话">
+          <div class="self-avatar" id="selfAvatar">🥚</div>
+          <div class="self-text">
+            <div class="self-name" id="selfName">我</div>
+            <div class="self-sub" id="selfSub">AI 员工工作台</div>
+          </div>
+          <button class="self-more" id="selfMore" title="编辑领导 Bot" aria-label="编辑领导 Bot" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
+        </div>
+
+        <div class="list" id="list"></div>
+
+        <div class="hidden-block" id="hiddenBlock" hidden>
+          <button class="hidden-head" id="hiddenToggle">
+            <span>已隐藏的 Bot</span><span class="hidden-count" id="hiddenCount">0</span>
+          </button>
+          <div class="list" id="hiddenList" hidden></div>
+        </div>
+
+        <div class="sidebar-bottom">
+          <div class="today-chip" id="todayChip">
+            <span>今日</span><b id="todayValue">0 tokens</b>
+          </div>
+          <button class="icon-btn" id="skillsBtn" data-tip="Skills 管理" aria-label="Skills 管理">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M11.4 4.1l1.5 4.4 4.4 1.5-4.4 1.5-1.5 4.4-1.5-4.4L5.5 10l4.4-1.5 1.5-4.4Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <path d="M18.2 15.1l.6 1.9 1.9.6-1.9.6-.6 1.9-.6-1.9-1.9-.6 1.9-.6.6-1.9Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button class="icon-btn" id="schedulesBtn" data-tip="定时任务" aria-label="定时任务">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="8.2" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M12 7.6V12l3 1.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button class="icon-btn" id="rolesBtn" data-tip="团队职位" aria-label="团队职位">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="3.8" y="7.2" width="16.4" height="12" rx="2.2" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M9 7.2V6a1.8 1.8 0 0 1 1.8-1.8h2.4A1.8 1.8 0 0 1 15 6v1.2M3.8 12.2h16.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <button class="icon-btn" id="gridBtn" data-tip="设置与状态" aria-label="设置与状态">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="4" y="4" width="6.4" height="6.4" rx="1.8" stroke="currentColor" stroke-width="1.6"/>
+              <rect x="13.6" y="4" width="6.4" height="6.4" rx="1.8" stroke="currentColor" stroke-width="1.6"/>
+              <rect x="4" y="13.6" width="6.4" height="6.4" rx="1.8" stroke="currentColor" stroke-width="1.6"/>
+              <rect x="13.6" y="13.6" width="6.4" height="6.4" rx="1.8" stroke="currentColor" stroke-width="1.6"/>
+            </svg>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="chat-head" id="chatHead" hidden></header>
+
+        <div class="thread-wrap">
+          <div class="thread" id="thread"></div>
+          <button class="scroll-down" id="scrollDown" hidden title="回到底部">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m6 10 6 6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="composer" id="composer" hidden>
+          <div class="selection-tray" id="selectionTray" hidden>
+            <div class="sel-head">
+              <span class="sel-label">已选中 <b id="selSource">页面内容</b></span>
+              <button type="button" id="selClose" title="取消选中" aria-label="取消选中">✕</button>
+            </div>
+            <div class="sel-preview" id="selPreview"></div>
+            <div class="sel-suggestions" id="selSuggestions"></div>
+          </div>
+          <div class="composer-box">
+            <div class="composer-main">
+              <div class="target-chip-row" id="targetChipRow" hidden></div>
+              <div class="attach-chips" id="attachChips" hidden></div>
+              <textarea id="input" rows="1" placeholder="派个活，或者 @ 某个成员…"></textarea>
+              <div class="composer-tools">
+                <button class="attach-btn" id="attachBtn" type="button" title="添加图片或文件">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M20 11.5 12.7 18.8a4.2 4.2 0 0 1-6-6l8-8a2.8 2.8 0 0 1 4 4l-8 8a1.4 1.4 0 0 1-2-2l7.3-7.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+                <input type="file" id="attachFile" multiple hidden />
+                <button class="effort-pill" id="effortBtn" type="button" title="推理强度">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M12 4.6v2.2M12 17.2v2.2M5.8 8.2l1.9 1.1M16.3 14.7l1.9 1.1M5.8 15.8l1.9-1.1M16.3 9.3l1.9-1.1"
+                      stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    <circle cx="12" cy="12" r="3.3" stroke="currentColor" stroke-width="1.5"/>
+                  </svg>
+                  <span id="effortLabel">自动</span>
+                </button>
+                <button class="model-pill" id="modelBtn" type="button" title="更换模型">
+                  <span class="model-dot" id="modelDot"></span>
+                  <span id="modelPillLabel">模型</span>
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="m7.5 10 4.5 4.5L16.5 10" stroke="currentColor" stroke-width="1.6"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <button class="steer-btn" id="steerBtn" type="button" hidden title="插话：结束当前思考，马上带着这条一起继续">插话</button>
+            <button class="send-btn" id="sendBtn" title="发送">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M5 12h13M13 6.5 18.5 12 13 17.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </main>
+
+      <div class="browser-resizer" id="browserResizer" hidden></div>
+      <aside class="browser-pane" id="browserPane" hidden>
+        <div class="pane-bar">
+          <div class="pane-tabs">
+            <button class="pane-tab active" id="paneBrowserTab" type="button">浏览器</button>
+            <button class="pane-tab" id="paneFileTab" type="button">文件</button>
+          </div>
+          <div class="browser-nav-group" id="browserNavGroup">
+            <div class="browser-nav">
+              <button id="browserBack" title="后退" aria-label="后退"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m14 6-6 6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button id="browserForward" title="前进" aria-label="前进"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m10 6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button id="browserReload" title="刷新" aria-label="刷新"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4.5V10h-5.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            </div>
+            <input id="browserUrl" placeholder="输入网址或搜索…" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="pane-file-title" id="paneFileTitle" hidden>
+            <span class="pane-file-icon" id="paneFileIcon">📄</span>
+            <span id="paneFileName"></span>
+          </div>
+          <div class="pane-zoom" id="paneZoom" hidden>
+            <button id="fileZoomOut" type="button" title="缩小">−</button>
+            <span id="fileZoomLabel" title="双击恢复 100%">100%</span>
+            <button id="fileZoomIn" type="button" title="放大">＋</button>
+          </div>
+          <div class="pane-actions">
+            <div class="pane-menu" id="paneMenu" hidden>
+              <button type="button" data-pane-act="pick">换一个文件…</button>
+              <button type="button" data-pane-act="reveal">在访达中显示</button>
+              <button type="button" data-pane-act="external">用默认应用打开</button>
+              <button type="button" data-pane-act="reload">重新载入</button>
+              <button type="button" data-pane-act="close">关闭面板</button>
+            </div>
+            <button id="paneTranslate" title="页面翻译 / 翻译设置" aria-label="页面翻译">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h8M8 4v2c0 4-2 6-4 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M5 13c2 2 4 3 7 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M13 20l4-9 4 9M14.5 17h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button id="paneEdit" title="编辑这个文件" aria-label="编辑文件" hidden>
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 20 1-4.2L16.6 4.2a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.2 19 4 20Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m14.8 6 3.2 3.2" stroke="currentColor" stroke-width="1.6"/></svg>
+            </button>
+            <button id="paneTheme" title="切换左侧面板亮/暗主题" aria-label="切换主题">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.6" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.2v1.7M12 19.1v1.7M3.2 12h1.7M19.1 12h1.7M5.8 5.8l1.2 1.2M17 17l1.2 1.2M18.2 5.8 17 7M7 17l-1.2 1.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+            <button id="paneOpenFile" class="pane-open" title="打开或更换文件" aria-label="打开或更换文件">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.8 7.2h5l1.7 2h9.7v9.4a1.8 1.8 0 0 1-1.8 1.8H5.6a1.8 1.8 0 0 1-1.8-1.8V7.2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M3.8 9.2V5.8A1.8 1.8 0 0 1 5.6 4h4.1l1.7 2h4.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              <span id="paneOpenLabel">换文件</span>
+            </button>
+            <button id="paneMore" title="更多文件操作" aria-label="更多文件操作" hidden>
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="5.6" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="18.4" cy="12" r="1.5" fill="currentColor"/></svg>
+            </button>
+            <button id="paneSwapSide" title="左右交换浏览器和聊天" aria-label="左右交换">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 7h10l-2.4-2.4M17 17H7l2.4 2.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button id="browserClose" title="关闭右侧面板" aria-label="关闭右侧面板"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          </div>
+        </div>
+        <div class="browser-body">
+          <webview id="browserView" partition="persist:sidebrowser" allowpopups
+            webpreferences="contextIsolation=yes, nodeIntegration=no"></webview>
+          <div class="file-viewer" id="fileViewer" hidden>
+            <div class="file-content" id="fileContent"></div>
+          </div>
+          <div class="browser-fallback" id="browserFallback" hidden>
+            <div class="browser-fallback-icon">🌐</div>
+            <div>内置浏览器只在桌面版可用</div>
+            <div class="muted">用 `npm run desktop` 或安装包打开即可</div>
+          </div>
+        </div>
+        <div class="browser-status" id="browserStatus"></div>
+        <div class="pane-drop-hint" id="paneDropHint" hidden><div>松开即可用文件查看器打开</div></div>
+      </aside>
+    </div>
+
+    <div class="slash-menu" id="slashMenu" hidden></div>
+    <div class="mention-menu" id="mentionMenu" hidden></div>
+
+    <div class="tr-float" id="trFloat" hidden>
+      <div class="tr-toolbar">
+        <button type="button" class="tr-go" id="trGo"><span class="tr-globe">🌐</span> 翻译</button>
+        <button type="button" class="tr-go" id="trExplain"><span class="tr-globe">💡</span> 解释</button>
+        <button type="button" class="tr-close" id="trClose" title="取消选中" aria-label="取消选中">✕</button>
+      </div>
+      <div class="tr-card" id="trCard" hidden>
+        <div class="tr-kind" id="trKind" hidden>解释</div>
+        <div class="tr-src" id="trSrc"></div>
+        <div class="tr-dst" id="trDst"></div>
+      </div>
+    </div>
+
+    <div class="sel-tools" id="selTools" hidden>
+      <button id="selQuote">引用</button>
+      <button id="selCopy">复制</button>
+    </div>
+
+    <div class="popover" id="newMenu" hidden>
+      <button data-act="bot"><svg class="pop-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="7.5" width="16" height="11" rx="3" stroke="currentColor" stroke-width="1.6"/><circle cx="9" cy="13" r="1.3" fill="currentColor"/><circle cx="15" cy="13" r="1.3" fill="currentColor"/><path d="M12 4.2v3.3M9.5 21h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>新建 Bot</button>
+      <button data-act="group"><svg class="pop-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12.5a7.5 7.5 0 0 1-10.9 6.7L4 20.5l1.4-4.3A7.5 7.5 0 1 1 20 12.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>新建群聊</button>
+    </div>
+
+    <div class="effort-pop" id="effortPop" hidden>
+      <div class="effort-pop-head"><span>推理强度</span><span class="effort-value" id="effortValue">自动</span></div>
+      <input type="range" id="effortRange" min="0" max="4" step="1" value="0" />
+      <div class="effort-scale" id="effortScale">
+        <span>自动</span><span>轻度</span><span>中度</span><span>高度</span><span>极高</span>
+      </div>
+      <div class="effort-desc" id="effortDesc">用模型默认强度</div>
+      <div class="effort-note">对本聊天里的 Bot 生效</div>
+    </div>
+
+    <div class="model-pop" id="modelPop" hidden>
+      <div class="model-pop-search">
+        <input id="modelSearch" placeholder="搜索模型…" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="model-list" id="modelListBox"></div>
+      <div class="model-pop-foot" id="modelPopFoot"></div>
+    </div>
+
+    <div class="modal-mask" id="modalMask" hidden>
+      <div class="modal" id="modal"></div>
+    </div>
+
+    <div class="toast-wrap" id="toastWrap"></div>
+
+    <div class="file-drop-hint" id="fileDropHint" hidden>
+      <div class="fdh-card">
+        <div class="fdh-icon">📥</div>
+        <div class="fdh-title">松开即可放进聊天框</div>
+        <div class="fdh-desc">图片和文件都会作为附件，可一次拖多个</div>
+      </div>
+    </div>
+
+    <script src="/vendor/marked.min.js"></script>
+    <script src="/vendor/purify.min.js"></script>
+    <script src="/vendor/mammoth.browser.min.js"></script>
+    <script src="/vendor/xlsx.full.min.js"></script>
+    <script src="/vendor/pptx-preview.umd.js"></script>
+    <script src="/vendor/katex/katex.min.js"></script>
+    <script src="/vendor/mermaid.min.js"></script>
+    <script src="/vendor/turndown.js"></script>
+    <script src="/markdown.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,67 @@
+name: Bug report
+description: 报告一个可以复现的问题
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请先确认：问题能在最新版本复现，且**不要**贴出 API Key、完整 `state.json`、聊天记录或带 token 的手机端链接。
+  - type: input
+    id: version
+    attributes:
+      label: Bot Team 版本
+      description: 菜单 → 关于 Bot Team，或安装包文件名
+      placeholder: "0.1.0 / dmg 文件名"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: 系统与芯片
+      placeholder: "macOS 15.2 · Apple Silicon / Intel"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: 相关后端
+      multiple: true
+      options:
+        - OpenCode
+        - Codex / ChatGPT
+        - Claude Code
+        - Antigravity
+        - WorkBuddy
+        - Qoder
+        - 自定义 API
+        - 与后端无关（界面 / 文件 / 翻译）
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 1. 打开… 2. 点击… 3. 看到…
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 有报错的话贴出关键几行；请先打码 Key、路径中的用户名、聊天内容。
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: 截图 / 补充信息
+      description: 拖拽图片到这里。截图前请确认没有敏感信息。

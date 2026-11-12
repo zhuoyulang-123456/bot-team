@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/zhuoyulang-123456/bot-team/security/advisories/new
+    about: 请私下报告，不要在公开 Issue 里贴可利用细节。
+  - name: 使用问题 / 讨论
+    url: https://github.com/zhuoyulang-123456/bot-team/discussions
+    about: 安装、账号、后端配置等问题优先在 Discussions 讨论。

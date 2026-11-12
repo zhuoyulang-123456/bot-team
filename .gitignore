@@ -1,0 +1,15 @@
+node_modules/
+release/
+data/
+bots/
+groups/
+.remember/
+.DS_Store
+*.log
+*.local
+.env
+.env.*
+build/icon.iconset/
+coverage/
+.vscode/
+.idea/

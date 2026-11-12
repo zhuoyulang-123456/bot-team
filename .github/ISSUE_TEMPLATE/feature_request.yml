@@ -1,0 +1,46 @@
+name: Feature request
+description: 提一个功能建议
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索现有 Issue，避免重复。功能建议不需要贴 API Key 或聊天记录。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到什么问题
+      description: 描述真实场景，而不是直接给方案。
+      placeholder: "我在…的时候，需要…，现在只能…"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望怎么解决
+      description: 可以给界面草图、交互流程或参考产品。
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及区域
+      multiple: true
+      options:
+        - 聊天 / 群聊
+        - Bot 设置 / 后端
+        - 用量 / 余额
+        - 文件 / 浏览器 / 翻译
+        - 技能 / 流程
+        - 打包 / 安装
+        - 文档
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你考虑过的替代方案
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我愿意提交 PR 实现这个功能
+          required: false

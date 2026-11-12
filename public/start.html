@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>起始页</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        background:
+          radial-gradient(900px 420px at 50% -10%, rgba(124, 108, 245, 0.2), transparent 60%),
+          #0d0f14;
+        color: #e8eaf0;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .wrap { width: min(620px, 88vw); text-align: center; padding: 30px 0 60px; }
+      .logo { font-size: 34px; margin-bottom: 12px; }
+      h1 { font-size: 22px; margin: 0 0 8px; font-weight: 600; letter-spacing: 0.3px; }
+      .sub { color: #8b93a2; font-size: 13px; line-height: 1.7; margin: 0 0 26px; }
+      form { display: flex; gap: 8px; }
+      input {
+        flex: 1; height: 46px; border-radius: 13px; border: 1px solid rgba(255,255,255,.12);
+        background: rgba(255,255,255,.05); color: #e8eaf0; font-size: 14px;
+        padding: 0 16px; outline: none; font-family: inherit;
+      }
+      input:focus { border-color: rgba(124,108,245,.6); box-shadow: 0 0 0 3px rgba(124,108,245,.12); }
+      button {
+        height: 46px; padding: 0 20px; border: none; border-radius: 13px;
+        background: linear-gradient(145deg, #8577ff, #6a58ec); color: #fff;
+        font-size: 13px; font-weight: 600; cursor: pointer;
+      }
+      .links { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 26px; }
+      .links a {
+        color: #b9bec7; text-decoration: none; font-size: 12px;
+        padding: 7px 13px; border-radius: 999px;
+        border: 1px solid rgba(255,255,255,.09); background: rgba(255,255,255,.03);
+      }
+      .links a:hover { color: #fff; border-color: rgba(124,108,245,.4); background: rgba(124,108,245,.1); }
+      .tip { margin-top: 26px; color: #626977; font-size: 11px; line-height: 1.7; }
+      html.light body {
+        background:
+          radial-gradient(900px 420px at 50% -10%, rgba(124, 108, 245, 0.12), transparent 60%),
+          #f7f8fb;
+        color: #1d2330;
+      }
+      html.light .sub { color: #626b7b; }
+      html.light input {
+        background: #ffffff;
+        border-color: #dfe4ec;
+        color: #1d2330;
+      }
+      html.light .links a {
+        color: #4b5565;
+        border-color: #e0e4ec;
+        background: #ffffff;
+      }
+      html.light .links a:hover {
+        color: #1d2330;
+        border-color: rgba(124, 108, 245, 0.45);
+        background: #f0edff;
+      }
+      html.light .tip { color: #7a8292; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="logo">🌐</div>
+      <h1>内置浏览器</h1>
+      <p class="sub">
+        输入网址打开，或者直接搜索。左侧的 Bot 也能控制这个浏览器：
+        <br />你跟它说「打开 xxx 看看」，它会自己开页、读内容、再回答你。
+      </p>
+      <form id="f">
+        <input id="q" placeholder="搜索或输入网址…" autofocus autocomplete="off" spellcheck="false" />
+        <button type="submit">打开</button>
+      </form>
+      <div class="links">
+        <a href="https://github.com">GitHub</a>
+        <a href="https://news.ycombinator.com">Hacker News</a>
+        <a href="https://www.zhihu.com">知乎</a>
+        <a href="https://www.bilibili.com">Bilibili</a>
+        <a href="https://www.google.com">Google</a>
+        <a href="https://www.bing.com">Bing</a>
+      </div>
+      <div class="tip">地址栏输入关键词会用 Bing 搜索 · 登录状态会保存在本地</div>
+    </div>
+    <script>
+      document.getElementById('f').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const v = document.getElementById('q').value.trim();
+        if (!v) return;
+        const url = /^https?:\/\//i.test(v)
+          ? v
+          : /^[\w-]+(\.[\w-]+)+([/?#]|$)/.test(v)
+            ? 'https://' + v
+            : 'https://www.bing.com/search?q=' + encodeURIComponent(v);
+        location.href = url;
+      });
+    </script>
+  </body>
+</html>
