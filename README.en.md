@@ -2,6 +2,8 @@
 
 [简体中文](README.md) | **English**
 
+[![build](https://github.com/zhuoyulang-123456/bot-team/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/zhuoyulang-123456/bot-team/actions/workflows/build.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A local-first multi-agent workspace for macOS. Each bot has its own model backend, memory, workspace, and sessions. Put them in group chats, hand off tasks, run workflows, and keep everything on your machine.
 
 ![Bot Team main window](docs/screenshots/main.png)

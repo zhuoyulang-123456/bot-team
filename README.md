@@ -2,6 +2,8 @@
 
 [**简体中文**](README.md) | [English](README.en.md)
 
+[![build](https://github.com/zhuoyulang-123456/bot-team/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/zhuoyulang-123456/bot-team/actions/workflows/build.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 本地多 bot 工作台。每个 bot 有自己的模型后端、独立记忆、独立工作区，可以私聊，也可以拉进群互相转交任务。
 
 ![Bot Team 主界面](docs/screenshots/main.png)
