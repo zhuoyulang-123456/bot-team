@@ -313,7 +313,7 @@ node "$BOT_TEAM_CLI" logs <chatId> 30
 
 ```json
 {
-  "name": "开源宝库轮班",
+  "name": "示例轮班",
   "startNodeId": "n1",
   "maxSteps": 50,
   "nodes": [
