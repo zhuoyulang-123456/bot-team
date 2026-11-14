@@ -36,7 +36,7 @@ jobs:
             $health = Invoke-RestMethod http://127.0.0.1:4821/api/health
             $setup = Invoke-RestMethod http://127.0.0.1:4821/api/setup/status
             $boot = Invoke-RestMethod http://127.0.0.1:4821/api/bootstrap
-            if (-not $health.ok) { throw "health failed" }
+            if ($null -eq $health.cli -or -not $health.desktop) { throw "health failed" }
             if ($setup.platform -ne "win32") { throw "unexpected platform: $($setup.platform)" }
             if ($null -eq $boot) { throw "bootstrap failed" }
           } finally {
