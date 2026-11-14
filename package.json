@@ -1,7 +1,7 @@
 {
   "name": "bot-team",
   "productName": "Bot Team",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Local multi-bot workspace: many bots, each with its own model backend (opencode / codex / antigravity), independent memory, and bot-to-bot handoff.",
