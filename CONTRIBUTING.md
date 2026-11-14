@@ -38,6 +38,7 @@ npm start           # 纯服务端，打开 http://127.0.0.1:4820
 3. 新增余额渠道时，更新 `lib/usage.mjs` 的 `PROVIDER_DEFS`、`fetchBalances()` 和 UI 的「连接 API 账号」。
 4. 涉及磁盘写入、命令执行、Key 存储的改动，先看 `SECURITY.md`。
 5. 不要提交真实的 `state.json`、聊天记录、API Key、截图里的个人信息。
+6. **软件设计修改记录**：每次修改 Bot Team 软件本体或框架，必须在桌面同步更新 `~/Desktop/Bot Team 软件更新日志.md`（详见 [AGENTS.md](AGENTS.md)），仅描述软件设计与框架改动，严禁写入任何用户私人项目、真实群/Bot 名称、凭据或个人模型配置。
 
 ## 提交 PR 前
 

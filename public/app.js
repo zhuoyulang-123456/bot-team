@@ -160,7 +160,10 @@ function botDisplayName(bot, chat = null) {
 const chatById = (id) => S.chats.find((c) => c.id === id);
 const activeChat = () => chatById(S.activeChatId);
 
+const IS_WIN = window.desktop?.platform === 'win32' || /Windows/i.test(navigator.userAgent || '');
+const MOD_KEY = IS_WIN ? 'Ctrl+' : '⌘';
 document.body.classList.toggle('desktop', !!window.desktop);
+document.body.classList.toggle('win', IS_WIN);
 
 const pad2 = (n) => String(n).padStart(2, '0');
 const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -897,6 +900,33 @@ function applyOrder(items, orderIds, getId = (x) => x.id) {
   });
 }
 
+function renderBotRowHtml(b, { activeDmBot, working, queued, inGroup = false }) {
+  const pc = S.chats.filter(
+    (c) => c.type === 'dm' && c.botIds.length === 1 && c.botIds[0] === b.id
+  ).length;
+  const isQueued = queued.has(b.id);
+  const isWorking = working.has(b.id);
+  const workLabel = isWorking
+    ? `<span class="working-label${isQueued ? ' queued' : ''}">● ${
+        isQueued ? '排队中' : '正在工作'
+      }</span> · `
+    : '';
+  return `
+    <div class="row ${inGroup ? 'in-folder' : ''} ${isWorking ? 'working' : ''} ${b.alert ? 'has-alert' : ''} ${
+      activeDmBot === b.id ? 'active' : ''
+    }" draggable="true" data-bot="${b.id}" data-drag-type="bot" data-drag-id="${b.id}">
+      <div class="row-avatar">
+        ${avatarFor(b)}
+        ${b.alert ? `<span class="row-alert" title="${esc(b.alert.text || '需要处理')}"></span>` : ''}
+      </div>
+      <div class="row-text">
+        <div class="row-name">${esc(botDisplayName(b))}</div>
+        <div class="row-sub">${workLabel}${pc > 1 ? `${pc} 个项目 · ` : ''}额度：${esc(b.quota)}</div>
+      </div>
+      <button class="row-more" data-edit="${b.id}" title="编辑" aria-label="编辑 ${esc(b.name)}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
+    </div>`;
+}
+
 function renderSidebar() {
   const f = S.filter.trim().toLowerCase();
   const match = (b) => !f || b.name.toLowerCase().includes(f) || (b.quota || '').toLowerCase().includes(f);
@@ -949,37 +979,62 @@ function renderSidebar() {
           </div>
         </button>`);
     }
-    html.push(`<div class="section-label">Bot</div>`);
+    html.push(
+      `<div class="section-label section-label-bots"><span>Bot</span><button type="button" class="section-add-btn" id="newBotGroupBtn" title="新建 Bot 分组" aria-label="新建 Bot 分组">📁+</button></div>`
+    );
+  } else if (visible.length || (S.botGroups || []).length) {
+    html.push(
+      `<div class="section-label section-label-bots"><span>Bot</span><button type="button" class="section-add-btn" id="newBotGroupBtn" title="新建 Bot 分组" aria-label="新建 Bot 分组">📁+</button></div>`
+    );
   }
 
-  for (const b of visible) {
-    const pc = S.chats.filter(
-      (c) => c.type === 'dm' && c.botIds.length === 1 && c.botIds[0] === b.id
-    ).length;
-    const isQueued = queued.has(b.id);
-    const isWorking = working.has(b.id);
-    const workLabel = isWorking
-      ? `<span class="working-label${isQueued ? ' queued' : ''}">● ${
-          isQueued ? '排队中' : '正在工作'
-        }</span> · `
-      : '';
+  const botGroups = S.botGroups || [];
+  const validGroupIds = new Set(botGroups.map((g) => g.id));
+  for (const grp of botGroups) {
+    const members = visible.filter((b) => b.groupId === grp.id);
+    if (f && !members.length && !grp.name.toLowerCase().includes(f)) continue;
+    const collapsed = f ? false : !!grp.collapsed;
     html.push(`
-      <div class="row ${isWorking ? 'working' : ''} ${b.alert ? 'has-alert' : ''} ${
-        activeDmBot === b.id ? 'active' : ''
-      }" draggable="true" data-bot="${b.id}" data-drag-type="bot" data-drag-id="${b.id}">
-        <div class="row-avatar">
-          ${avatarFor(b)}
-          ${b.alert ? `<span class="row-alert" title="${esc(b.alert.text || '需要处理')}"></span>` : ''}
+      <div class="bot-folder ${collapsed ? 'collapsed' : ''}" data-bot-group="${grp.id}">
+        <div class="bot-folder-head" data-folder-toggle="${grp.id}" data-drop-folder="${grp.id}">
+          <span class="bot-folder-caret">${collapsed ? '▸' : '▾'}</span>
+          <span class="bot-folder-icon">📁</span>
+          <span class="bot-folder-name">${esc(grp.name)}</span>
+          <span class="bot-folder-count">${members.length}</span>
+          <span class="bot-folder-actions">
+            <button type="button" class="bot-folder-btn" data-folder-rename="${grp.id}" title="重命名分组" aria-label="重命名分组">✎</button>
+            <button type="button" class="bot-folder-btn" data-folder-del="${grp.id}" title="删除分组" aria-label="删除分组">×</button>
+          </span>
         </div>
-        <div class="row-text">
-          <div class="row-name">${esc(botDisplayName(b))}</div>
-          <div class="row-sub">${workLabel}${pc > 1 ? `${pc} 个项目 · ` : ''}额度：${esc(b.quota)}</div>
-        </div>
-        <button class="row-more" data-edit="${b.id}" title="编辑" aria-label="编辑 ${esc(b.name)}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
+        ${
+          collapsed
+            ? ''
+            : `<div class="bot-folder-body" data-drop-folder="${grp.id}">${
+                members.length
+                  ? members
+                      .map((b) =>
+                        renderBotRowHtml(b, { activeDmBot, working, queued, inGroup: true })
+                      )
+                      .join('')
+                  : '<div class="bot-folder-empty">拖入 Bot 到此分组</div>'
+              }</div>`
+        }
       </div>`);
   }
 
-  if (!visible.length && !groups.length && !leader) {
+  const ungrouped = visible.filter((b) => !b.groupId || !validGroupIds.has(b.groupId));
+  html.push(
+    `<div class="bot-ungrouped-zone ${!ungrouped.length && botGroups.length ? 'is-empty' : ''}" data-drop-folder="__ungrouped__">`
+  );
+  for (const b of ungrouped) {
+    html.push(renderBotRowHtml(b, { activeDmBot, working, queued, inGroup: false }));
+  }
+  if (!ungrouped.length && botGroups.length) {
+    html.push(`<div class="bot-ungrouped-hint">拖到此处移出分组</div>`);
+  }
+  html.push(`</div>`);
+
+  if (!visible.length && !groups.length && !leader && !botGroups.length) {
     html.push(`<div class="muted" style="padding:16px 12px">还没有 bot。点右上角 ＋ 新建。</div>`);
   }
 
@@ -1410,6 +1465,45 @@ function openFileMenu(card, btn) {
   m.style.top = `${top}px`;
 }
 
+function isLocalLinkHref(rawHref) {
+  const target = String(rawHref || '').trim();
+  if (!target || target.startsWith('#') || /^(mailto:|tel:|javascript:)/i.test(target)) return false;
+  if (/^https?:\/\//i.test(target)) {
+    if (!target.startsWith(location.origin + '/')) return false;
+    const rel = target.slice(location.origin.length + 1);
+    return !rel.startsWith('api/') && !rel.startsWith('uploads/');
+  }
+  return true;
+}
+
+async function openLocalLinkHref(rawHref) {
+  let target = String(rawHref || '').trim();
+  if (!isLocalLinkHref(target)) return false;
+  if (/^https?:\/\//i.test(target)) target = target.slice(location.origin.length + 1);
+  if (/^file:\/\//i.test(target)) {
+    target = target.replace(/^file:\/\//i, '');
+    if (/^\/[A-Za-z]:[\\/]/.test(target)) target = target.slice(1);
+  }
+  try {
+    target = decodeURIComponent(target);
+  } catch {}
+  if (/^([A-Za-z]:[\\/]|\\\\|\/|~[\\/])/.test(target)) {
+    await openFileInPane(target);
+    return true;
+  }
+  try {
+    const files = await findLocalFiles(target);
+    if (files.length) {
+      await openFileInPane(files[0].path);
+    } else {
+      toast(`未找到文件：${target}`, 'err');
+    }
+  } catch (e) {
+    toast(`打不开：${e.message}`, 'err');
+  }
+  return true;
+}
+
 function bindFileCards() {
   const thread = $('#thread');
   if (!thread) return;
@@ -1419,6 +1513,15 @@ function bindFileCards() {
       e.preventDefault();
       if (ref.dataset.btFile) openLocalFile(ref.dataset.btFile, 'open');
       return;
+    }
+    const mdLink = e.target.closest('.msg-text a');
+    if (mdLink) {
+      const rawHref = mdLink.getAttribute('href') || '';
+      if (isLocalLinkHref(rawHref)) {
+        e.preventDefault();
+        openLocalLinkHref(rawHref);
+        return;
+      }
     }
     const card = e.target.closest('.file-card');
     const menuBtn = e.target.closest('[data-file-menu]');
@@ -3850,6 +3953,15 @@ document.addEventListener('click', (e) => {
     e.preventDefault();
     openFileInPane(ref.dataset.btFile);
     return;
+  }
+  const viewerLink = e.target.closest('#fileViewer a');
+  if (viewerLink) {
+    const rawHref = viewerLink.getAttribute('href') || '';
+    if (isLocalLinkHref(rawHref)) {
+      e.preventDefault();
+      openLocalLinkHref(rawHref);
+      return;
+    }
   }
   const box = document.getElementById('skillDetail');
   if (!box || box.hidden) return;
@@ -9595,8 +9707,102 @@ function openGlobalSearch(initial = '') {
   };
 }
 
+function promptBotGroupName({ title, initial = '', submitText = '确定' }) {
+  return new Promise((resolve) => {
+    openModal(`
+      <h3>${esc(title)}</h3>
+      <div class="field">
+        <label>分组名称</label>
+        <input id="bgModalInput" type="text" maxlength="40" value="${esc(initial)}" placeholder="例如：HOMESTEAD 项目组、日常工具" />
+        <div class="field-hint">可随时把左侧 Bot 拖进或拖出分组文件夹；删除分组不会删除成员。</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="bgModalClose" type="button">取消</button>
+        <button class="btn primary" id="bgModalOk" type="button">${esc(submitText)}</button>
+      </div>
+    `);
+    const input = $('#bgModalInput');
+    const finish = (val) => {
+      closeModal();
+      resolve(val);
+    };
+    $('#bgModalClose').onclick = () => finish(null);
+    $('#bgModalOk').onclick = () => finish(input.value.trim());
+    input.onkeydown = (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        finish(input.value.trim());
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        finish(null);
+      }
+    };
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 20);
+  });
+}
+
 function bind() {
-  $('#list').addEventListener('click', (e) => {
+  $('#list').addEventListener('click', async (e) => {
+    if (e.target.closest('#newBotGroupBtn')) {
+      e.stopPropagation();
+      const name = await promptBotGroupName({ title: '新建 Bot 分组', submitText: '创建' });
+      if (!name) return;
+      try {
+        const grp = await api('/api/bot-groups', { method: 'POST', body: { name } });
+        S.botGroups ||= [];
+        if (!S.botGroups.some((g) => g.id === grp.id)) S.botGroups.push(grp);
+        renderSidebar();
+      } catch (err) {
+        toast(`创建分组失败：${err.message}`, 'err');
+      }
+      return;
+    }
+    const renameBtn = e.target.closest('[data-folder-rename]');
+    if (renameBtn) {
+      e.stopPropagation();
+      const gid = renameBtn.dataset.folderRename;
+      const grp = (S.botGroups || []).find((g) => g.id === gid);
+      if (!grp) return;
+      const name = await promptBotGroupName({ title: '重命名分组', initial: grp.name, submitText: '保存' });
+      if (!name || name === grp.name) return;
+      try {
+        const updated = await api(`/api/bot-groups/${gid}`, { method: 'PATCH', body: { name } });
+        grp.name = updated.name;
+        renderSidebar();
+      } catch (err) {
+        toast(`重命名失败：${err.message}`, 'err');
+      }
+      return;
+    }
+    const delBtn = e.target.closest('[data-folder-del]');
+    if (delBtn) {
+      e.stopPropagation();
+      const gid = delBtn.dataset.folderDel;
+      const grp = (S.botGroups || []).find((g) => g.id === gid);
+      if (!grp || !confirm(`删除分组「${grp.name}」？组内 Bot 不会被删除，将回到未分组列表。`)) return;
+      try {
+        await api(`/api/bot-groups/${gid}`, { method: 'DELETE' });
+        S.botGroups = (S.botGroups || []).filter((g) => g.id !== gid);
+        for (const b of S.bots) if (b.groupId === gid) b.groupId = null;
+        renderSidebar();
+      } catch (err) {
+        toast(`删除分组失败：${err.message}`, 'err');
+      }
+      return;
+    }
+    const folderToggle = e.target.closest('[data-folder-toggle]');
+    if (folderToggle) {
+      const gid = folderToggle.dataset.folderToggle;
+      const grp = (S.botGroups || []).find((g) => g.id === gid);
+      if (!grp) return;
+      grp.collapsed = !grp.collapsed;
+      renderSidebar();
+      api(`/api/bot-groups/${gid}`, { method: 'PATCH', body: { collapsed: grp.collapsed } }).catch(() => {});
+      return;
+    }
     const edit = e.target.closest('[data-edit]');
     if (edit) {
       e.stopPropagation();
@@ -9611,33 +9817,80 @@ function bind() {
   let dragInfo = null;
   const clearDrop = () => {
     document.querySelectorAll('#list .row.drop-target').forEach((r) => r.classList.remove('drop-target'));
+    document.querySelectorAll('#list .drop-folder-target').forEach((r) => r.classList.remove('drop-folder-target'));
   };
   $('#list').addEventListener('dragstart', (e) => {
     const row = e.target.closest('[data-drag-type]');
     if (!row) return;
     dragInfo = { type: row.dataset.dragType, id: row.dataset.dragId };
     row.classList.add('dragging');
+    if (dragInfo.type === 'bot') $('#list').classList.add('dragging-bot');
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', dragInfo.id);
   });
   $('#list').addEventListener('dragend', () => {
     dragInfo = null;
+    $('#list').classList.remove('dragging-bot');
     document.querySelectorAll('#list .row.dragging').forEach((r) => r.classList.remove('dragging'));
     clearDrop();
   });
   $('#list').addEventListener('dragover', (e) => {
+    if (!dragInfo) return;
     const row = e.target.closest('[data-drag-type]');
-    if (!dragInfo || !row || row.dataset.dragType !== dragInfo.type) return;
+    const folderZone = dragInfo.type === 'bot' ? e.target.closest('[data-drop-folder]') : null;
+    if (dragInfo.type === 'bot' && folderZone) {
+      const targetGid = folderZone.dataset.dropFolder === '__ungrouped__' ? null : folderZone.dataset.dropFolder;
+      const draggedBot = botById(dragInfo.id);
+      const sameGroupRow = row && row.dataset.dragType === 'bot' && row.dataset.dragId !== dragInfo.id && (botById(row.dataset.dragId)?.groupId || null) === (draggedBot?.groupId || null);
+      if (sameGroupRow && !folderZone.classList.contains('bot-folder-head')) {
+        e.preventDefault();
+        clearDrop();
+        row.classList.add('drop-target');
+        return;
+      }
+      if ((draggedBot?.groupId || null) !== targetGid) {
+        e.preventDefault();
+        clearDrop();
+        const highlightEl = folderZone.closest('.bot-folder') || folderZone;
+        highlightEl.classList.add('drop-folder-target');
+        return;
+      }
+    }
+    if (!row || row.dataset.dragType !== dragInfo.type) return;
     if (row.dataset.dragId === dragInfo.id) return;
     e.preventDefault();
     clearDrop();
     row.classList.add('drop-target');
   });
   $('#list').addEventListener('drop', async (e) => {
+    if (!dragInfo) return;
     const row = e.target.closest('[data-drag-type]');
-    if (!dragInfo || !row || row.dataset.dragType !== dragInfo.type) return;
-    e.preventDefault();
+    const folderZone = dragInfo.type === 'bot' ? e.target.closest('[data-drop-folder]') : null;
     const { type, id } = dragInfo;
+    if (type === 'bot' && folderZone) {
+      const targetGid = folderZone.dataset.dropFolder === '__ungrouped__' ? null : folderZone.dataset.dropFolder;
+      const draggedBot = botById(id);
+      const sameGroupRow = row && row.dataset.dragType === 'bot' && row.dataset.dragId !== id && (botById(row.dataset.dragId)?.groupId || null) === (draggedBot?.groupId || null);
+      if (!(sameGroupRow && !folderZone.classList.contains('bot-folder-head')) && (draggedBot?.groupId || null) !== targetGid) {
+        e.preventDefault();
+        clearDrop();
+        if (!draggedBot) return;
+        draggedBot.groupId = targetGid;
+        if (targetGid) {
+          const grp = (S.botGroups || []).find((g) => g.id === targetGid);
+          if (grp) grp.collapsed = false;
+        }
+        renderSidebar();
+        try {
+          await api(`/api/bots/${id}`, { method: 'PATCH', body: { groupId: targetGid } });
+        } catch (err) {
+          toast(`移动分组失败：${err.message}`, 'err');
+        }
+        return;
+      }
+    }
+    if (!row || row.dataset.dragType !== type) return;
+    e.preventDefault();
     const toId = row.dataset.dragId;
     clearDrop();
     if (id === toId) return;
@@ -10312,6 +10565,56 @@ function bind() {
         <div class="field-hint">单个流程环节跑太久会自动中止并写清原因，避免闷头跑一小时才发现没产出。Bot 自己的「单次执行超时」更短时按更短的算。</div>
       </div>
       <div class="field">
+        <label class="check-row">
+          <input id="autoReportToLeader" type="checkbox" ${
+            S.settings?.autoReportToLeader !== false ? 'checked' : ''
+          } />
+          <span>AI 异常与流程停滞自动汇报给领导 Bot</span>
+        </label>
+        <div class="field-hint">当成员额度不足、异常停止、连续报错，或流程显示运行中但实际无人干活时，自动私聊通知领导 Bot 协调切换模型或恢复流程。</div>
+      </div>
+      <div class="field row-2 even">
+        <div>
+          <label>连续报错触发汇报阈值</label>
+          <select id="botErrorThreshold">
+            ${[
+              [1, '1 次（立即汇报）'],
+              [2, '2 次（默认）'],
+              [3, '3 次'],
+              [5, '5 次'],
+              [0, '仅额度与严重停止时汇报'],
+            ]
+              .map(
+                ([n, label]) =>
+                  `<option value="${n}" ${
+                    Number(S.settings?.botErrorThreshold ?? 2) === n ? 'selected' : ''
+                  }>${label}</option>`
+              )
+              .join('')}
+          </select>
+        </div>
+        <div>
+          <label>流程无人干活停滞告警</label>
+          <select id="flowStallMinutes">
+            ${[
+              [2, '2 分钟'],
+              [3, '3 分钟（默认）'],
+              [5, '5 分钟'],
+              [10, '10 分钟'],
+              [15, '15 分钟'],
+              [0, '关闭停滞检测'],
+            ]
+              .map(
+                ([n, label]) =>
+                  `<option value="${n}" ${
+                    Number(S.settings?.flowStallMinutes ?? 3) === n ? 'selected' : ''
+                  }>${label}</option>`
+              )
+              .join('')}
+          </select>
+        </div>
+      </div>
+      <div class="field">
         <label>积分计费（Qoder / WorkBuddy）</label>
         <div class="field row-2 even">
           <div>
@@ -10576,6 +10879,54 @@ function bind() {
               ? `单个流程环节最长 ${flowNodeMinutes.value} 分钟`
               : '流程环节不再限制时长'
           );
+        } catch (e) {
+          toast(`保存失败：${e.message}`, 'err');
+        }
+      };
+    const autoReport = $('#autoReportToLeader');
+    if (autoReport)
+      autoReport.onchange = async () => {
+        try {
+          const res = await api('/api/settings', {
+            method: 'PATCH',
+            body: { autoReportToLeader: !!autoReport.checked },
+          });
+          S.settings = res.settings;
+          toast(
+            autoReport.checked
+              ? '已开启 AI 异常与流程停滞自动汇报领导'
+              : '已关闭自动汇报领导'
+          );
+        } catch (e) {
+          toast(`保存失败：${e.message}`, 'err');
+        }
+      };
+    const botErrSel = $('#botErrorThreshold');
+    if (botErrSel)
+      botErrSel.onchange = async () => {
+        try {
+          const val = Number(botErrSel.value);
+          const res = await api('/api/settings', {
+            method: 'PATCH',
+            body: { botErrorThreshold: val },
+          });
+          S.settings = res.settings;
+          toast(val > 0 ? `同一 Bot 连续报错 ${val} 次将自动汇报领导` : '已设置为仅额度与严重停止时汇报');
+        } catch (e) {
+          toast(`保存失败：${e.message}`, 'err');
+        }
+      };
+    const flowStallSel = $('#flowStallMinutes');
+    if (flowStallSel)
+      flowStallSel.onchange = async () => {
+        try {
+          const val = Number(flowStallSel.value);
+          const res = await api('/api/settings', {
+            method: 'PATCH',
+            body: { flowStallMinutes: val },
+          });
+          S.settings = res.settings;
+          toast(val > 0 ? `流程无人干活超过 ${val} 分钟将自动告警领导` : '已关闭流程停滞检测');
         } catch (e) {
           toast(`保存失败：${e.message}`, 'err');
         }
@@ -12869,9 +13220,11 @@ function resolveEditorImages(p) {
     const src = img.getAttribute('src') || '';
     if (!src || /^(https?:|data:|blob:)/i.test(src)) return;
     const clean = decodeURIComponent(src.split('#')[0].split('?')[0]);
-    const abs = clean.startsWith('/')
+    const isAbs = /^([A-Za-z]:[\\/]|\\\\|\/)/.test(clean);
+    const sepIdx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+    const abs = isAbs
       ? clean
-      : p.slice(0, p.lastIndexOf('/') + 1) + clean.replace(/^\.\//, '');
+      : (sepIdx >= 0 ? p.slice(0, sepIdx + 1) : '') + clean.replace(/^\.[\\/]/, '');
     img.dataset.origSrc = src;
     img.src = fileRawUrl(abs);
   });
@@ -12920,8 +13273,8 @@ function richToolbarHtml(docx = false) {
     <button type="button" class="btn primary" id="feSave">保存</button>
     <button type="button" class="btn" id="feCancel">取消</button>
     <span class="fv-tool-sep"></span>
-    ${btn('undo', fvIcon('undo'), '撤销 (⌘Z)')}
-    ${btn('redo', fvIcon('redo'), '重做 (⇧⌘Z)')}
+    ${btn('undo', fvIcon('undo'), `撤销 (${MOD_KEY}Z)`)}
+    ${btn('redo', fvIcon('redo'), IS_WIN ? '重做 (Ctrl+Y)' : '重做 (⇧⌘Z)')}
     <span class="fv-tool-sep"></span>
     <select id="feBlock" class="fv-select" title="段落样式">
       <option value="p">正文</option>
@@ -12932,9 +13285,9 @@ function richToolbarHtml(docx = false) {
       <option value="blockquote">引用</option>
       <option value="pre">代码块</option>
     </select>
-    ${btn('bold', '<b>B</b>', '加粗 (⌘B)')}
-    ${btn('italic', '<i>I</i>', '斜体 (⌘I)')}
-    ${btn('underline', '<u>U</u>', '下划线 (⌘U)')}
+    ${btn('bold', '<b>B</b>', `加粗 (${MOD_KEY}B)`)}
+    ${btn('italic', '<i>I</i>', `斜体 (${MOD_KEY}I)`)}
+    ${btn('underline', '<u>U</u>', `下划线 (${MOD_KEY}U)`)}
     ${btn('strikeThrough', '<s>S</s>', '删除线')}
     ${btn('insertUnorderedList', fvIcon('bullet'), '项目符号')}
     ${btn('insertOrderedList', fvIcon('numbered'), '编号')}
@@ -14255,7 +14608,7 @@ async function startEdit() {
       <div class="fv-editor-bar">
         <button type="button" class="btn primary" id="feSave">保存</button>
         <button type="button" class="btn" id="feCancel">取消</button>
-        <span class="fv-editor-note">纯文本 · ⌘S 保存</span>
+        <span class="fv-editor-note">纯文本 · ${MOD_KEY}S 保存</span>
         <span class="fv-editor-status" id="feStatus"></span>
       </div>
       <textarea id="feText" spellcheck="false"></textarea>
@@ -14741,9 +15094,11 @@ async function renderFile(p, meta) {
         const src = img.getAttribute('src') || '';
         if (!src || /^(https?:|data:|blob:)/i.test(src)) return;
         const clean = decodeURIComponent(src.split('#')[0].split('?')[0]);
-        const abs = clean.startsWith('/')
+        const isAbs = /^([A-Za-z]:[\\/]|\\\\|\/)/.test(clean);
+        const sepIdx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+        const abs = isAbs
           ? clean
-          : p.slice(0, p.lastIndexOf('/') + 1) + clean.replace(/^\.\//, '');
+          : (sepIdx >= 0 ? p.slice(0, sepIdx + 1) : '') + clean.replace(/^\.[\\/]/, '');
         img.src = fileRawUrl(abs);
       });
       content.querySelectorAll('img').forEach((img) => {
@@ -15467,7 +15822,7 @@ async function findLocalFiles(name) {
 async function resolveLocalFileArg(raw) {
   const value = String(raw || '').trim();
   if (!value) throw new Error('缺少文件路径或文件名');
-  if (value.startsWith('/') || value.startsWith('~/')) return { path: value, files: [] };
+  if (/^([A-Za-z]:[\\/]|\\\\|\/|~[\\/])/.test(value)) return { path: value, files: [] };
   const files = await findLocalFiles(value);
   if (!files.length) throw new Error(`没找到文件：${value}`);
   return { path: files[0].path, files };
@@ -15682,6 +16037,11 @@ function connectSSE() {
     renderSidebar();
   });
 
+  es.addEventListener('botGroups', (e) => {
+    S.botGroups = JSON.parse(e.data).botGroups || [];
+    renderSidebar();
+  });
+
   es.addEventListener('roles', (e) => {
     S.roles = JSON.parse(e.data).roles || [];
   });
@@ -15773,6 +16133,7 @@ async function boot() {
   S.self = data.self;
   S.settings = data.settings || { leaderId: null, wallpaper: true };
   S.bots = data.bots;
+  S.botGroups = data.botGroups || [];
   S.chats = data.chats;
   S.roles = data.roles || [];
   S.agyProfiles = data.agyProfiles || [];

@@ -32,7 +32,14 @@ import {
   ensureGroupProjects,
   botWorkspace,
 } from './lib/store.mjs';
-import { runTurn, addMessage, compactChat, runWorkflowNode, setChatQueueRunner } from './lib/orchestrator.mjs';
+import {
+  runTurn,
+  addMessage,
+  compactChat,
+  runWorkflowNode,
+  setChatQueueRunner,
+  setBotIssueHandler,
+} from './lib/orchestrator.mjs';
 import { childEnv, resolveCmd, killActiveChildren, reapOrphanChildren, ensureAgyHome, runBot } from './lib/agents.mjs';
 import { registerEditor, unregisterEditor, takeEditorOps, ackEditorOp, touchEditor } from './lib/editor-bridge.mjs';
 import {
@@ -48,6 +55,15 @@ import { initPricing, pricingMeta, creditsForRun, creditMoney } from './lib/pric
 import { browserDiagnostics } from './lib/browser-cookies.mjs';
 import { setupProxy } from './lib/net.mjs';
 import { buildWorkflowHtml } from './lib/wf-export.mjs';
+import {
+  isWin,
+  isMac,
+  isAbsolutePath,
+  which,
+  pythonCommand,
+  openPathExternal,
+  revealPathExternal,
+} from './lib/platform.mjs';
 import { DEFAULT_FLOW_DESIGN_RULES } from './lib/flow-rules.mjs';
 import { translateTexts, explainText, summarizeText, rewriteText } from './lib/translate.mjs';
 
@@ -199,12 +215,21 @@ const TAILSCALE_BINS = [
 ];
 
 function tailscaleBin() {
+  if (isWin) {
+    const found = which('tailscale');
+    if (found) return found;
+    const winDefault = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Tailscale', 'tailscale.exe');
+    try {
+      if (fs.existsSync(winDefault)) return winDefault;
+    } catch {}
+    return '';
+  }
   for (const p of TAILSCALE_BINS) {
     try {
       if (fs.existsSync(p)) return p;
     } catch {}
   }
-  return '';
+  return which('tailscale') || '';
 }
 
 async function refreshTailscale() {
@@ -915,26 +940,237 @@ function nodeRole(node) {
   return 'normal';
 }
 
+function findLeaderDm(leaderId) {
+  const leader = state.bots.find((b) => b.id === leaderId);
+  if (!leader) return null;
+  const dms = state.chats.filter((c) => c.type === 'dm' && (c.botIds || []).includes(leaderId));
+  return (
+    dms.find((c) => c.id === leader.lastChatId) ||
+    dms.find((c) => (c.project || '') === '默认项目') ||
+    dms[0] ||
+    null
+  );
+}
+
+const incidentCooldowns = new Map();
+
+async function dispatchLeaderDmAlert({
+  dedupKey,
+  cooldownMs = 180000,
+  systemText,
+  prompt,
+  relatedBotId = '',
+  chat = null,
+}) {
+  try {
+    const leaderId = state.settings?.leaderId;
+    if (!leaderId) return false;
+    const leader = state.bots.find((b) => b.id === leaderId);
+    if (!leader) return false;
+    const dm = findLeaderDm(leaderId);
+    if (!dm) return false;
+
+    const prev = dedupKey ? incidentCooldowns.get(dedupKey) : null;
+    if (prev && (prev.inFlight || Date.now() - prev.at < cooldownMs)) return false;
+    if (dedupKey) incidentCooldowns.set(dedupKey, { at: Date.now(), inFlight: true });
+
+    const note = addMessage(state, dm.id, { type: 'system', text: systemText });
+    saveState(state);
+    emit('message', { chatId: dm.id, message: note });
+
+    // 如果出问题的就是领导 Bot 自己，只在私聊发出明确告警，避免自己异常又唤醒自己造成死循环。
+    if (relatedBotId && relatedBotId === leader.id) {
+      const warn = addMessage(state, dm.id, {
+        type: 'system',
+        text: `⚠️ 领导 Bot「${leader.name}」自身发生异常，已暂停自动唤醒，请主人检查模型/额度或暂切领导。`,
+      });
+      saveState(state);
+      emit('message', { chatId: dm.id, message: warn });
+      if (dedupKey) incidentCooldowns.set(dedupKey, { at: Date.now(), inFlight: false });
+      return true;
+    }
+
+    if (chat?.type === 'group') {
+      addGroupSystem(chat, `${systemText}（已自动汇报给领导 ${leader.name}）`);
+    }
+
+    enqueue(dm.id, async () => {
+      const ctrl = new AbortController();
+      runAborts.set(dm.id, ctrl);
+      try {
+        await runTurn({
+          state,
+          chat: dm,
+          text: prompt,
+          auto: true,
+          save: () => saveState(state),
+          emit,
+          browser: runBrowserCommand,
+          signal: ctrl.signal,
+        });
+      } catch {}
+      finally {
+        if (runAborts.get(dm.id) === ctrl) runAborts.delete(dm.id);
+        if (dedupKey) incidentCooldowns.set(dedupKey, { at: Date.now(), inFlight: false });
+        emit('bots', { bots: state.bots.map(publicBot) });
+        emit('chats', { chats: state.chats });
+      }
+    });
+    return true;
+  } catch (e) {
+    if (dedupKey) incidentCooldowns.set(dedupKey, { at: Date.now(), inFlight: false });
+    console.error('[leader-alert] dispatch failed:', e?.message || e);
+    return false;
+  }
+}
+
+function issueKindLabel(kind) {
+  if (kind === 'quota') return '额度不足 / 限流';
+  if (kind === 'stopped') return '异常停止 / 权限或鉴权受阻';
+  if (kind === 'error_streak') return '连续报错';
+  return '执行异常';
+}
+
+async function notifyLeaderBotIssue({ chat, bot, kind, detail, node = null, source = 'chat', health = null }) {
+  if (!bot?.id) return false;
+  if (state.settings?.autoReportToLeader === false) return false;
+  const label = issueKindLabel(kind);
+  const dedupKey =
+    kind === 'quota' ? `quota:${bot.id}` : `${kind}:${bot.id}:${chat?.id || 'global'}`;
+  const cooldownMs = kind === 'quota' ? 5 * 60000 : 3 * 60000;
+  const altBots = state.bots
+    .filter((b) => b.id !== bot.id && b.id !== state.settings?.leaderId)
+    .slice(0, 6)
+    .map((b) => `${b.name}(${b.id}, ${b.backend}/${b.model || '默认'})`)
+    .join('、');
+
+  const prompt = [
+    '【Bot 异常报告 · 自动调度】',
+    `异常类型：${label}`,
+    `受影响 Bot：${bot.name}（botId=${bot.id}，backend=${bot.backend}，model=${bot.model || '默认'}）`,
+    chat ? `所在会话：${chat.title || '私聊'}（chatId=${chat.id}，type=${chat.type}）` : '',
+    node ? `所在流程环节：${node.title}（nodeId=${node.id}）` : '',
+    `来源：${source}  |  连续失败次数：${health?.consecutiveErrors || 1}`,
+    `错误详情：${String(detail || '未知错误').slice(0, 600)}`,
+    altBots ? `其他成员参考：${altBots}` : '',
+    '',
+    '请立刻排查并处理（不要只口头解释）：',
+    '1. 先运行 node "$BOT_TEAM_CLI" models 查看当前可用健康模型，或 node "$BOT_TEAM_CLI" status 看团队状态。',
+    `2. 如果是额度不足、鉴权失效或某模型连续报错：用 node "$BOT_TEAM_CLI" patch /api/bots/${bot.id} '{"backend":"...","model":"..."}' 帮它切换到可用模型；如果是群流程环节受阻，也可以调整环节负责人或模型后再恢复。`,
+    chat?.type === 'group' && chat?.workflow
+      ? `3. 处理好后检查 node "$BOT_TEAM_CLI" chats，必要时执行 workflow-resume ${chat.id} 维持流程运转。`
+      : '3. 处理好后在原会话继续推进未完成任务。',
+    '4. 只有本机已无任何可用备用模型/额度，或需要老板重新登录、充值、授权时，才把情况和建议简洁汇报给老板。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return dispatchLeaderDmAlert({
+    dedupKey,
+    cooldownMs,
+    systemText: `自动告警：${bot.name} ${label}`,
+    prompt,
+    relatedBotId: bot.id,
+    chat,
+  });
+}
+
+async function notifyLeaderWorkflowStall(chat, wf, reason, snapshot = {}) {
+  if (!chat || !wf) return false;
+  if (state.settings?.autoReportToLeader === false) return false;
+  const stallMins = Math.max(2, Number(state.settings?.flowStallMinutes ?? 3) || 3);
+  const currentNode = wf.currentNodeId
+    ? (wf.nodes || []).find((n) => n.id === wf.currentNodeId)
+    : null;
+  const memberStatus = (chat.botIds || [])
+    .map((id) => {
+      const b = state.bots.find((x) => x.id === id);
+      const rt = runtime.get(id);
+      if (!b) return null;
+      return `${b.name}(${rt?.running ? `工作中:${rt.chatTitle || rt.chatId}` : '空闲'}${
+        rt?.lastError ? `, 上次错:${String(rt.lastError).slice(0, 40)}` : ''
+      })`;
+    })
+    .filter(Boolean)
+    .join('；');
+
+  const prompt = [
+    '【工作流停滞告警 · 强制】',
+    `群：${chat.title}（chatId=${chat.id}）`,
+    `流程：${wf.name || '未命名流程'}（status=${wf.status}）`,
+    `停滞原因：${reason}`,
+    `当前节点：${currentNode ? `${currentNode.title}（${currentNode.id}）` : '未知'}`,
+    snapshot.idleMs ? `已无实际干活成员且无推进：约 ${Math.round(snapshot.idleMs / 60000)} 分钟` : '',
+    memberStatus ? `群成员状态：${memberStatus}` : '',
+    '',
+    '请立刻排查并恢复流程运转：',
+    `1. 先运行 node "$BOT_TEAM_CLI" status 和 node "$BOT_TEAM_CLI" workflow ${chat.id} 查看真实状态和最后一步交付。`,
+    '2. 检查是否有 Bot 额度耗尽/报错/卡死：有的话先用 patch /api/bots/<botId> 换模型，或修改流程节点负责人。',
+    `3. 如流程处于假运行（status=running/draining 但无人推进），先执行 node "$BOT_TEAM_CLI" workflow-stop ${chat.id} 清理卡死状态，再用 workflow-resume ${chat.id} 接续跑起来（若已经自然完成则核对交付后停掉并汇报）。`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return dispatchLeaderDmAlert({
+    dedupKey: `stall:${chat.id}`,
+    cooldownMs: stallMins * 60000,
+    systemText: `工作流停滞告警：${chat.title} · ${wf.name || '流程'}`,
+    prompt,
+    chat,
+  });
+}
+
+setBotIssueHandler((payload) => {
+  void notifyLeaderBotIssue(payload);
+});
+
+// 工作流停止审查的防重入锁仅保留在进程内存中，绝不持久化到 state.json，避免重启或异常中断后永久锁死
+const stopReportLocks = new Map();
+
+function stopReportKey(wf, chat) {
+  return wf?.id || chat?.id || '';
+}
+
+function clearStopReportLock(wf, chat) {
+  const key = stopReportKey(wf, chat);
+  if (key) stopReportLocks.delete(key);
+}
+
+// 统一清理工作流持久化对象上可能残留的运行态瞬时锁（保留 audit 元信息）
+function clearWorkflowTransientLocks(
+  wf,
+  chat = null,
+  { clearDrain = false, clearStopLock = true } = {}
+) {
+  if (!wf) return;
+  wf.pauseRequested = false;
+  if (clearDrain) wf.drain = null;
+  delete wf.interruptedOnBoot;
+  delete wf.reportInFlight;
+  if (clearStopLock) clearStopReportLock(wf, chat);
+}
+
 // 工作流从「运行中」变成「不运行」时，强制交给领导 Bot 审查（手动停止/暂停/收尾除外）。
 async function notifyLeaderWorkflowStop(chat, wf, finalStatus, run) {
+  const key = stopReportKey(wf, chat);
+  let lockToken = '';
+  let queued = false;
   try {
-    if (!wf) return;
+    if (!wf || !key) return;
     if (wf.pausedByUser) return;
     if (run?.manualStop || run?.pause || run?.drain) return;
     const leaderId = state.settings?.leaderId;
     if (!leaderId) return;
     const leader = state.bots.find((b) => b.id === leaderId);
     if (!leader) return;
-    if (wf.reportInFlight) return;
-    const dms = state.chats.filter((c) => c.type === 'dm' && (c.botIds || []).includes(leaderId));
-    const dm =
-      dms.find((c) => c.id === leader.lastChatId) ||
-      dms.find((c) => (c.project || '') === '默认项目') ||
-      dms[0];
+    if (stopReportLocks.has(key)) return;
+    const dm = findLeaderDm(leaderId);
     if (!dm) return;
-    wf.reportInFlight = true;
+    lockToken = uid('sr');
+    stopReportLocks.set(key, { token: lockToken, at: Date.now() });
     wf.lastStopReportAt = Date.now();
     wf.lastStopStatus = finalStatus;
+    delete wf.reportInFlight;
     saveState(state);
 
     const lastSteps = (wf.history || [])
@@ -986,19 +1222,25 @@ async function notifyLeaderWorkflowStop(chat, wf, finalStatus, run) {
       } catch {}
       finally {
         if (runAborts.get(dm.id) === ctrl) runAborts.delete(dm.id);
-        wf.reportInFlight = false;
-        saveState(state);
+        // 校验锁令牌一致再删除，避免误清后续重启后的新停止审查锁
+        if (stopReportLocks.get(key)?.token === lockToken) stopReportLocks.delete(key);
         emit('bots', { bots: state.bots.map(publicBot) });
         emit('chats', { chats: state.chats });
       }
     });
+    queued = true;
   } catch (e) {
+    if (!queued && lockToken && stopReportLocks.get(key)?.token === lockToken) {
+      stopReportLocks.delete(key);
+    }
     console.error('[workflow] leader notify failed:', e?.message || e);
   }
 }
 
 // 流程环节失败/空结果时，先请领导 Bot 判断并处理，而不是直接判死流程
 async function superviseWorkflowFailure({ chat, wf, node, bot, result, run }) {
+  run.inSupervisor = true;
+  run.lastProgressAt = Date.now();
   try {
     const leaderId = state.settings?.leaderId;
     if (!leaderId || leaderId === bot.id) return null;
@@ -1016,11 +1258,14 @@ async function superviseWorkflowFailure({ chat, wf, node, bot, result, run }) {
       .join('\n');
     const prompt = [
       `你是「${leader.name}」，Bot Team 的领导。`,
-      `群「${chat.title}」的流程「${wf.name}」在环节「${node.title}」失败，执行者是 ${bot.name}（${bot.backend}）。`,
+      `群「${chat.title}」的流程「${wf.name}」在环节「${node.title}」失败，执行者是 ${bot.name}（botId=${bot.id}，${bot.backend}，model=${bot.model || '默认'}）。`,
       `错误：${String(result.error || '没有返回内容').slice(0, 800)}`,
       stepsText ? `已执行的步骤：\n${stepsText}` : '',
       chat.announcement ? `群公告：\n${String(chat.announcement).slice(0, 1500)}` : '',
       '请先判断原因，能修就修：可以读写文件、执行命令、检查日志和上次产物。',
+      result.quota || result.auth
+        ? `提示：这属于额度/限流或鉴权类错误，你可以先用 node "$BOT_TEAM_CLI" models 查可用模型，再用 node "$BOT_TEAM_CLI" patch /api/bots/${bot.id} '{"backend":"...","model":"..."}' 给它切换模型后输出 @@FLOW_RETRY。`
+        : '',
       '处理完在最后单独一行输出一个标记：',
       '@@FLOW_RETRY —— 问题已修好，重跑这个环节',
       '@@FLOW_TAKEOVER —— 你直接把这个环节做完（把结果写在标记前面）',
@@ -1095,6 +1340,9 @@ async function superviseWorkflowFailure({ chat, wf, node, bot, result, run }) {
   } catch (e) {
     console.error('[workflow] supervisor failed:', e?.message || e);
     return null;
+  } finally {
+    run.inSupervisor = false;
+    run.lastProgressAt = Date.now();
   }
 }
 
@@ -1130,7 +1378,26 @@ async function runWorkflow(chat, run, boot = {}) {
   let finalStatus = 'done';
   const maxStepsNow = () => (Number(wf.maxSteps) > 0 ? Number(wf.maxSteps) : 0);
   const maxLabel = maxStepsNow() || '不限';
-  const mergeStates = new Map();
+  run.activeWorkers = new Set();
+  run.lastProgressAt = Date.now();
+  run.inSupervisor = false;
+  let workerSeq = 0;
+  const runTrackedNode = async (opts) => {
+    const key = `${opts.node?.id || 'node'}:${++workerSeq}`;
+    run.activeWorkers.add(key);
+    run.lastProgressAt = Date.now();
+    try {
+      return await runWorkflowNode({
+        ...opts,
+        onActivity: () => {
+          run.lastProgressAt = Date.now();
+        },
+      });
+    } finally {
+      run.activeWorkers.delete(key);
+      run.lastProgressAt = Date.now();
+    }
+  };
   const incomingCount = (targetId) =>
     wf.nodes.reduce(
       (count, n) => count + (n.next || []).filter((e) => e.to === targetId).length,
@@ -1208,148 +1475,217 @@ async function runWorkflow(chat, run, boot = {}) {
     emit('message', { chatId: chat.id, message });
     mirrorHandoffToBots(fromBot.id, toBot.id, text, message.meta);
   };
-  const runBranch = async (startId, input, fromTitle, fromBot) => {
-    let nodeId = startId;
-    let prev = input;
-    let ft = fromTitle;
-    let fb = fromBot;
-    const releaseMergeWaiters = () => {
-      for (const st of mergeStates.values()) st.waiters.forEach((resolve) => resolve());
-      mergeStates.clear();
+  const runFork = async (targets, input, fromTitle, fromBot) => {
+    let activeBranches = targets.length;
+    let forkFailed = false;
+    const mergeStates = new Map();
+    const totalWaiting = () => {
+      let count = 0;
+      for (const st of mergeStates.values()) count += st.waiters.length;
+      return count;
     };
-    while (nodeId && !run.cancel) {
-      if (run.pause) {
-        releaseMergeWaiters();
-        return { ok: false, paused: true, error: '已暂停' };
+    const releaseMergeWaiters = (action = 'abort') => {
+      for (const st of mergeStates.values()) {
+        if (action === 'abort') st.aborted = true;
+        st.waiters.splice(0).forEach((resolve) => resolve(action));
       }
-      if (maxStepsNow() && steps >= maxStepsNow()) {
-        return { ok: false, limit: true, error: `达到最多运行步数（${maxStepsNow()}）` };
-      }
-      const n = wf.nodes.find((x) => x.id === nodeId);
-      const b = n
-        ? state.bots.find((x) => x.id === n.botId && chat.botIds.includes(x.id))
-        : null;
-      if (!n || !b) return { ok: false, error: '并行分支没有可用的 Bot' };
-      steps += 1;
-      const res = await runWorkflowNode({
-        state,
-        chat,
-        node: n,
-        bot: b,
-        input: prev,
-        fromNodeTitle: ft,
-        fromBotName: fb,
-        signal: run.controller.signal,
-        shouldPause: () => !!run.pause,
-        save: () => saveState(state),
-        emit,
-      });
-      recordBranch(n, b, res);
-      if (res.paused) {
-        releaseMergeWaiters();
-        return { ok: false, paused: true, error: '已暂停', node: n };
-      }
-      if (!res.ok) {
-        releaseMergeWaiters();
-        return { ok: false, error: res.error || '并行分支环节失败', text: res.text, node: n };
-      }
-      const edge = pickWorkflowNext(n, res);
-      if (!edge || edge.to === '__end__') return { ok: true, text: res.text, node: n, bot: b };
-      const next = wf.nodes.find((x) => x.id === edge.to);
-      const nb = next
-        ? state.bots.find((x) => x.id === next.botId && chat.botIds.includes(x.id))
-        : null;
-      if (!next || !nb) {
-        releaseMergeWaiters();
-        return { ok: false, error: '并行分支找不到下一步' };
-      }
-      const indeg = incomingCount(next.id);
-      if (indeg >= 2) {
-        let st = mergeStates.get(next.id);
-        if (!st) {
-          st = { expected: indeg, arrived: [], waiters: [] };
-          mergeStates.set(next.id, st);
-        }
-        addParallelHandoff(b, n, nb, next, true, res.text);
-        st.arrived.push({ node: n, bot: b, res });
-        if (st.arrived.length < st.expected) {
-          await new Promise((resolve) => st.waiters.push(resolve));
-          return { ok: true, text: res.text, node: n, bot: b };
-        }
-        const combined = st.arrived
-          .map(
-            (a, i) =>
-              `【并行 ${i + 1}/${st.arrived.length} · ${a.node.title} · ${
-                a.bot.name
-              }】\n${String(a.res.text || '').slice(0, 3500)}`
-          )
-          .join('\n\n')
-          .slice(0, 15000);
-        addGroupSystem(
-          chat,
-          `并行汇合：「${next.title}」收到 ${st.arrived.length} 个分支结果，按顺序处理`
-        );
-        steps += 1;
-        const mergeRes = await runWorkflowNode({
-          state,
-          chat,
-          node: next,
-          bot: nb,
-          input: combined,
-          fromNodeTitle: n.title,
-          fromBotName: b.name,
-          signal: run.controller.signal,
-          shouldPause: () => !!run.pause,
-          save: () => saveState(state),
-          emit,
-        });
-        recordBranch(next, nb, mergeRes);
-        st.waiters.forEach((resolve) => resolve());
-        // 汇合点每跑完一次就清掉状态，否则下一轮会带着上一轮的分支结果重复汇合
-        mergeStates.delete(next.id);
-        if (!mergeRes.ok) {
-          // 汇合环节失败：断点记在汇合点，继续流程时只需重跑它
-          persistResume({
-            nodeId: next.id,
-            input: combined,
-            fromNodeTitle: n.title,
-            fromBotName: b.name,
+      if (action === 'abort') mergeStates.clear();
+    };
+    const runBranch = async (startId, branchInput, ft0, fb0) => {
+      let nodeId = startId;
+      let prev = branchInput;
+      let ft = ft0;
+      let fb = fb0;
+      try {
+        while (nodeId && !run.cancel) {
+          if (run.pause) {
+            forkFailed = true;
+            releaseMergeWaiters('abort');
+            return { ok: false, paused: true, error: '已暂停' };
+          }
+          if (maxStepsNow() && steps >= maxStepsNow()) {
+            return { ok: false, limit: true, error: `达到最多运行步数（${maxStepsNow()}）` };
+          }
+          const n = wf.nodes.find((x) => x.id === nodeId);
+          const b = n
+            ? state.bots.find((x) => x.id === n.botId && chat.botIds.includes(x.id))
+            : null;
+          if (!n || !b) {
+            forkFailed = true;
+            releaseMergeWaiters('abort');
+            return { ok: false, error: '并行分支没有可用的 Bot' };
+          }
+          steps += 1;
+          const res = await runTrackedNode({
+            state,
+            chat,
+            node: n,
+            bot: b,
+            input: prev,
+            fromNodeTitle: ft,
+            fromBotName: fb,
+            signal: run.controller.signal,
+            shouldPause: () => !!run.pause,
+            save: () => saveState(state),
+            emit,
           });
-          saveState(state);
-          return {
-            ok: false,
-            error: mergeRes.error || '汇合环节失败',
-            text: mergeRes.text,
-            node: next,
-          };
+          recordBranch(n, b, res);
+          if (res.paused) {
+            forkFailed = true;
+            releaseMergeWaiters('abort');
+            return { ok: false, paused: true, error: '已暂停', node: n };
+          }
+          if (!res.ok) {
+            forkFailed = true;
+            releaseMergeWaiters('abort');
+            return { ok: false, error: res.error || '并行分支环节失败', text: res.text, node: n };
+          }
+          const edge = pickWorkflowNext(n, res);
+          if (!edge || edge.to === '__end__') {
+            return { ok: true, text: res.text, node: n, bot: b };
+          }
+          const next = wf.nodes.find((x) => x.id === edge.to);
+          const nb = next
+            ? state.bots.find((x) => x.id === next.botId && chat.botIds.includes(x.id))
+            : null;
+          if (!next || !nb) {
+            forkFailed = true;
+            releaseMergeWaiters('abort');
+            return { ok: false, error: '并行分支找不到下一步' };
+          }
+          const indeg = incomingCount(next.id);
+          if (indeg >= 2) {
+            if (forkFailed || run.cancel || run.pause) {
+              return { ok: true, text: res.text, node: n, bot: b };
+            }
+            let st = mergeStates.get(next.id);
+            if (!st) {
+              st = { expected: Math.min(indeg, targets.length), arrived: [], waiters: [], merging: false, aborted: false };
+              mergeStates.set(next.id, st);
+            }
+            addParallelHandoff(b, n, nb, next, true, res.text);
+            st.arrived.push({ node: n, bot: b, res });
+            const runningSiblings = activeBranches - 1 - totalWaiting();
+            let promoted = false;
+            if (st.arrived.length < st.expected && runningSiblings > 0 && !st.merging && !st.aborted) {
+              const action = await new Promise((resolve) => st.waiters.push(resolve));
+              if (action !== 'promote') {
+                return { ok: true, text: res.text, node: n, bot: b };
+              }
+              promoted = true;
+            }
+            if (forkFailed || st.aborted || run.cancel || run.pause) {
+              return { ok: true, text: res.text, node: n, bot: b };
+            }
+            if (st.merging) {
+              return { ok: true, text: res.text, node: n, bot: b };
+            }
+            st.merging = true;
+            if (promoted || st.arrived.length < st.expected) {
+              addGroupSystem(
+                chat,
+                `并行汇合：「${next.title}」收到 ${st.arrived.length} 个分支结果（其余分支已提前结束），继续汇合`
+              );
+            } else {
+              addGroupSystem(
+                chat,
+                `并行汇合：「${next.title}」收到 ${st.arrived.length} 个分支结果，按顺序处理`
+              );
+            }
+            const combined = st.arrived
+              .map(
+                (a, i) =>
+                  `【并行 ${i + 1}/${st.arrived.length} · ${a.node.title} · ${
+                    a.bot.name
+                  }】\n${String(a.res.text || '').slice(0, 3500)}`
+              )
+              .join('\n\n')
+              .slice(0, 15000);
+            steps += 1;
+            const mergeRes = await runTrackedNode({
+              state,
+              chat,
+              node: next,
+              bot: nb,
+              input: combined,
+              fromNodeTitle: n.title,
+              fromBotName: b.name,
+              signal: run.controller.signal,
+              shouldPause: () => !!run.pause,
+              save: () => saveState(state),
+              emit,
+            });
+            recordBranch(next, nb, mergeRes);
+            // 汇合点每跑完一次就清掉状态并释放等待兄弟，否则下一轮或其余分支会被卡住
+            const waitersToWake = st.waiters.splice(0);
+            mergeStates.delete(next.id);
+            waitersToWake.forEach((resolve) => resolve('merged'));
+            if (!mergeRes.ok) {
+              // 汇合环节失败：断点记在汇合点，继续流程时只需重跑它
+              persistResume({
+                nodeId: next.id,
+                input: combined,
+                fromNodeTitle: n.title,
+                fromBotName: b.name,
+              });
+              saveState(state);
+              return {
+                ok: false,
+                error: mergeRes.error || '汇合环节失败',
+                text: mergeRes.text,
+                node: next,
+              };
+            }
+            if (nodeRole(next) === 'uploader') run.pending = [];
+            const mEdge = pickWorkflowNext(next, mergeRes);
+            if (!mEdge || mEdge.to === '__end__') {
+              return { ok: true, text: mergeRes.text, node: next, bot: nb };
+            }
+            // 汇合之后不要在这个分支里继续跑，交回外层循环，
+            // 否则循环回到起点后遇到并行节点会走错路径（第二轮刚开始就结束）。
+            return {
+              ok: true,
+              text: mergeRes.text,
+              node: next,
+              bot: nb,
+              cont: {
+                nodeId: mEdge.to,
+                input: mergeRes.text || '',
+                fromTitle: next.title,
+                fromBot: nb.name,
+              },
+            };
+          }
+          addParallelHandoff(b, n, nb, next, false, res.text);
+          prev = res.text || '';
+          ft = n.title;
+          fb = b.name;
+          nodeId = edge.to;
         }
-        if (nodeRole(next) === 'uploader') run.pending = [];
-        const mEdge = pickWorkflowNext(next, mergeRes);
-        if (!mEdge || mEdge.to === '__end__') {
-          return { ok: true, text: mergeRes.text, node: next, bot: nb };
+        return { ok: false, aborted: true };
+      } catch (err) {
+        forkFailed = true;
+        releaseMergeWaiters('abort');
+        return { ok: false, error: String(err?.message || err).slice(0, 400) };
+      } finally {
+        activeBranches -= 1;
+        if (forkFailed || run.cancel || run.pause) {
+          releaseMergeWaiters('abort');
+        } else {
+          const runningSiblings = activeBranches - totalWaiting();
+          if (runningSiblings <= 0) {
+            for (const st of mergeStates.values()) {
+              if (!st.merging && st.waiters.length > 0) {
+                const lastWaiter = st.waiters.pop();
+                lastWaiter?.('promote');
+                break;
+              }
+            }
+          }
         }
-        // 汇合之后不要在这个分支里继续跑，交回外层循环，
-        // 否则循环回到起点后遇到并行节点会走错路径（第二轮刚开始就结束）。
-        return {
-          ok: true,
-          text: mergeRes.text,
-          node: next,
-          bot: nb,
-          cont: {
-            nodeId: mEdge.to,
-            input: mergeRes.text || '',
-            fromTitle: next.title,
-            fromBot: nb.name,
-          },
-        };
       }
-      addParallelHandoff(b, n, nb, next, false, res.text);
-      prev = res.text || '';
-      ft = n.title;
-      fb = b.name;
-      nodeId = edge.to;
-    }
-    return { ok: false, aborted: true };
+    };
+    return Promise.all(targets.map((id) => runBranch(id, input, fromTitle, fromBot)));
   };
   try {
     while (nodeId && !run.cancel) {
@@ -1415,7 +1751,7 @@ async function runWorkflow(chat, run, boot = {}) {
         }`
       );
 
-      let result = await runWorkflowNode({
+      let result = await runTrackedNode({
         state,
         chat,
         node,
@@ -1461,7 +1797,7 @@ async function runWorkflow(chat, run, boot = {}) {
           } else if (decision.action === 'takeover') {
             addGroupSystem(chat, `领导 ${decision.leader.name} 直接接手「${node.title}」`);
             bot = decision.leader;
-            result = await runWorkflowNode({
+            result = await runTrackedNode({
               state,
               chat,
               node,
@@ -1475,7 +1811,7 @@ async function runWorkflow(chat, run, boot = {}) {
             });
           } else {
             addGroupSystem(chat, `领导 ${decision.leader.name} 已处理，重跑「${node.title}」`);
-            result = await runWorkflowNode({
+            result = await runTrackedNode({
               state,
               chat,
               node,
@@ -1607,9 +1943,7 @@ async function runWorkflow(chat, run, boot = {}) {
             .map((id) => wf.nodes.find((n) => n.id === id)?.title || '?')
             .join('、')}`
         );
-        const branchResults = await Promise.all(
-          targets.map((id) => runBranch(id, result.text || '', node.title, bot.name))
-        );
+        const branchResults = await runFork(targets, result.text || '', node.title, bot.name);
         if (run.cancel) {
           finalStatus = 'stopped';
           break;
@@ -1770,7 +2104,8 @@ async function runWorkflow(chat, run, boot = {}) {
     wf.status = finalStatus;
     wf.currentNodeId = null;
     wf.finishedAt = Date.now();
-    wf.pauseRequested = false;
+    clearWorkflowTransientLocks(wf, chat, { clearDrain: true, clearStopLock: false });
+    if (finalStatus !== 'paused') wf.pausedByUser = false;
     if (finalStatus === 'done') wf.resume = null;
     saveState(state);
     emit('chats', { chats: state.chats });
@@ -1859,6 +2194,7 @@ function startWorkflow(chat, { resume = false } = {}) {
   workflowRuns.set(chat.id, run);
   wf.status = 'running';
   wf.pausedByUser = false;
+  clearWorkflowTransientLocks(wf, chat, { clearDrain: true, clearStopLock: true });
   wf.currentNodeId = saved ? saved.nodeId : wf.startNodeId;
   if (!resume) {
     wf.history = [];
@@ -1902,7 +2238,7 @@ function pauseWorkflow(chat) {
   if (!run) {
     if (wf && ['running', 'draining'].includes(wf.status)) {
       wf.status = 'paused';
-      wf.drain = null;
+      clearWorkflowTransientLocks(wf, chat, { clearDrain: true, clearStopLock: true });
       saveState(state);
       emit('chats', { chats: state.chats });
       return { ok: true, already: false };
@@ -1934,9 +2270,11 @@ function stopWorkflow(chat) {
     } catch {}
     return { ok: true };
   }
-  if (chat.workflow?.status === 'running') {
+  if (['running', 'draining'].includes(chat.workflow?.status)) {
     chat.workflow.status = 'stopped';
     chat.workflow.currentNodeId = null;
+    chat.workflow.pausedByUser = false;
+    clearWorkflowTransientLocks(chat.workflow, chat, { clearDrain: true, clearStopLock: true });
     saveState(state);
     emit('chats', { chats: state.chats });
     addGroupSystem(chat, `流程已停止：${chat.workflow.name}`);
@@ -2125,6 +2463,7 @@ function emailFromAgyToken(data) {
 }
 
 function agyKeychain() {
+  if (isWin) return null;
   const now = Date.now();
   // 命中 10 分钟；读取失败/为空要缓存更久（6 小时），否则系统会每隔几十秒
   // 弹一次钥匙串授权框——用户反馈的「找不到钥匙串」就是这个。
@@ -2524,9 +2863,10 @@ async function runPdfEdit(action, target, payload = {}) {
   );
   fs.writeFileSync(tmp, JSON.stringify(payload), 'utf8');
   try {
+    const py = pythonCommand();
     const r = await execFileP(
-      resolveCmd('python3') || 'python3',
-      [pdfEditScriptPath(), action, target, tmp],
+      py.cmd,
+      [...py.args, pdfEditScriptPath(), action, target, tmp],
       { timeout: 180000 }
     );
     let data = null;
@@ -2547,9 +2887,10 @@ async function runOfficeEdit(action, target, payload = {}) {
   const tmp = path.join(os.tmpdir(), `bt-office-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
   fs.writeFileSync(tmp, JSON.stringify(payload), 'utf8');
   try {
+    const py = pythonCommand();
     const r = await execFileP(
-      resolveCmd('python3') || 'python3',
-      [officeEditScriptPath(), action, target, tmp],
+      py.cmd,
+      [...py.args, officeEditScriptPath(), action, target, tmp],
       { timeout: 180000 }
     );
     let data = null;
@@ -2568,9 +2909,11 @@ async function runOfficeEdit(action, target, payload = {}) {
 
 function startAsrWorker() {
   if (asrStart) return asrStart;
-  const child = spawn(resolveCmd('python3') || 'python3', [asrWorkerPath()], {
+  const py = pythonCommand();
+  const child = spawn(py.cmd, [...py.args, asrWorkerPath()], {
     env: { ...childEnv(), BT_ASR_MODEL: process.env.BT_ASR_MODEL || 'base' },
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
   asrProcess = child;
   const rl = readline.createInterface({ input: child.stdout });
@@ -2770,6 +3113,7 @@ function snapshot() {
     settings: settingsPublic(),
     flowRulesDefault: DEFAULT_FLOW_DESIGN_RULES,
     bots: state.bots.map(publicBot),
+    botGroups: state.botGroups || [],
     chats: state.chats,
     roles: state.roles || [],
     schedules: publicSchedules(),
@@ -3008,7 +3352,7 @@ function parseGithubSkillUrl(raw) {
 
 function execFileP(cmd, args, { timeout = 120000 } = {}) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout, env: childEnv(), maxBuffer: 8 * 1024 * 1024 }, (err, out, stderr) => {
+    execFile(cmd, args, { timeout, env: childEnv(), maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, out, stderr) => {
       resolve({ ok: !err, out: String(out || ''), err: String(stderr || err?.message || '') });
     });
   });
@@ -3157,7 +3501,7 @@ const FILE_MIME = {
 
 function expandLocalPath(raw) {
   const t = String(raw || '').trim();
-  return t.startsWith('~/') ? path.join(os.homedir(), t.slice(2)) : t;
+  return t.startsWith('~/') || t.startsWith('~\\') ? path.join(os.homedir(), t.slice(2)) : t;
 }
 
 function fileViewerMime(file) {
@@ -3328,7 +3672,7 @@ function searchLocalFiles(query) {
   const q = String(query || '').trim();
   if (!q) return [];
   const direct = expandLocalPath(q);
-  if (direct.startsWith('/') || direct.startsWith('~')) {
+  if (isAbsolutePath(direct) || direct.startsWith('~')) {
     try {
       const st = fs.statSync(direct);
       if (st.isFile()) {
@@ -3336,16 +3680,21 @@ function searchLocalFiles(query) {
       }
     } catch {}
   }
-  const needle = q.toLowerCase();
+  const rawQuery = q.replace(/\\/g, '/');
+  const baseQuery = rawQuery.includes('/') ? rawQuery.split('/').pop() : rawQuery;
+  const relSuffix = rawQuery.includes('/') ? rawQuery.replace(/^\.?\//, '').toLowerCase() : '';
+  const needle = (baseQuery || q).toLowerCase();
   const normName = (v) => String(v || '').toLowerCase().replace(/[\s_\-·.()（）]+/g, '');
   const needleNorm = normName(needle);
   const home = os.homedir();
   const roots = [
+    { dir: BOTS_DIR, depth: 6 },
+    { dir: GROUPS_DIR, depth: 6 },
+    { dir: DATA_DIR, depth: 6 },
     { dir: path.join(home, 'Desktop'), depth: 4 },
     { dir: path.join(home, 'Documents'), depth: 4 },
     { dir: path.join(home, 'Downloads'), depth: 4 },
     { dir: home, depth: 3 },
-    { dir: DATA_DIR, depth: 6 },
   ];
   const out = [];
   const seen = new Set();
@@ -3368,7 +3717,10 @@ function searchLocalFiles(query) {
         continue;
       }
       if (!entry.isFile()) continue;
-      if (
+      if (relSuffix) {
+        const normFull = full.replace(/\\/g, '/').toLowerCase();
+        if (!normFull.endsWith('/' + relSuffix) && !entry.name.toLowerCase().includes(needle)) continue;
+      } else if (
         !entry.name.toLowerCase().includes(needle) &&
         !(needleNorm && normName(entry.name).includes(needleNorm))
       )
@@ -3439,7 +3791,8 @@ text = chr(10).join(out)
 print('PAGES:' + str(pages))
 print(text[:limit])
 `;
-  const r = await execFileP('python3', ['-c', script, file, String(max)], { timeout: 30000 });
+  const py = pythonCommand();
+  const r = await execFileP(py.cmd, [...py.args, '-c', script, file, String(max)], { timeout: 30000 });
   if (!r.ok || !r.out) throw new Error(r.err.slice(0, 200) || 'PDF 文本提取失败');
   const pages = Number((r.out.match(/PAGES:(\d+)/) || [])[1]) || 0;
   const markerAt = r.out.indexOf('PAGES:');
@@ -3467,11 +3820,26 @@ async function extractFileText(file, max) {
   if (ext === 'pdf') {
     result = await extractPdfText(file, max);
   } else if (['doc', 'docx', 'rtf', 'rtfd', 'odt', 'html', 'htm'].includes(ext)) {
-    const r = await execFileP('/usr/bin/textutil', ['-convert', 'txt', '-stdout', file], {
-      timeout: 20000,
-    });
-    if (!r.ok && !r.out) throw new Error('这个文档暂时无法提取文字');
-    const text = r.out || '';
+    let text = '';
+    if (isMac) {
+      const r = await execFileP('/usr/bin/textutil', ['-convert', 'txt', '-stdout', file], {
+        timeout: 20000,
+      });
+      if (!r.ok && !r.out) throw new Error('这个文档暂时无法提取文字');
+      text = r.out || '';
+    } else if (ext === 'docx') {
+      try {
+        const mammoth = await import('mammoth');
+        const out = await mammoth.default.extractRawText({ path: file });
+        text = String(out?.value || '');
+      } catch {
+        throw new Error('无法提取 .docx 文本（请直接在文件查看器中打开）');
+      }
+    } else if (ext === 'html' || ext === 'htm') {
+      text = readTextFileLimited(file, max).text;
+    } else {
+      throw new Error(`Windows 暂不支持提取 .${ext} 文本${ext === 'doc' ? '（旧版 .doc 请另存为 .docx 或安装 LibreOffice）' : ''}`);
+    }
     result = { text: text.slice(0, max), truncated: text.length > max, pages: 0, kind: ext };
   } else if (isTextExt(file)) {
     result = readTextFileLimited(file, max);
@@ -3756,6 +4124,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p === '/api/open-app' && req.method === 'POST') {
+    if (isWin) return json(res, 501, { error: 'Windows 暂不支持一键打开该桌面 App，请手动打开' });
     const body = await readBody(req);
     const apps = {
       antigravity: ['Antigravity'],
@@ -3812,6 +4181,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p === '/api/open-settings' && req.method === 'POST') {
+    if (isWin) return json(res, 501, { error: 'Windows 暂不支持打开 macOS 系统设置' });
     const body = await readBody(req);
     const urls = {
       fda: 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
@@ -4327,9 +4697,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p === '/api/files/write-docx' && req.method === 'POST') {
+    if (!isMac) return json(res, 501, { error: '当前平台暂不支持保存 .docx（仅支持 macOS）' });
     const body = await readBody(req);
     const target = expandLocalPath(body.path);
-    if (!target || !target.startsWith('/')) return json(res, 400, { error: '需要绝对路径' });
+    if (!target || !isAbsolutePath(target)) return json(res, 400, { error: '需要绝对路径' });
     if (path.extname(target).toLowerCase() !== '.docx') {
       return json(res, 400, { error: '这个接口只用于 .docx' });
     }
@@ -4396,7 +4767,7 @@ const server = http.createServer(async (req, res) => {
 
   if (p === '/api/office/pdf/read' && req.method === 'GET') {
     const target = expandLocalPath(url.searchParams.get('path'));
-    if (!target || !target.startsWith('/')) return json(res, 400, { error: '需要绝对路径' });
+    if (!target || !isAbsolutePath(target)) return json(res, 400, { error: '需要绝对路径' });
     if (path.extname(target).toLowerCase() !== '.pdf') {
       return json(res, 400, { error: '只支持 .pdf' });
     }
@@ -4413,7 +4784,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/office/pdf/write' && req.method === 'POST') {
     const body = await readBody(req);
     const target = expandLocalPath(body.path);
-    if (!target || !target.startsWith('/')) return json(res, 400, { error: '需要绝对路径' });
+    if (!target || !isAbsolutePath(target)) return json(res, 400, { error: '需要绝对路径' });
     if (path.extname(target).toLowerCase() !== '.pdf') {
       return json(res, 400, { error: '只支持 .pdf' });
     }
@@ -4448,7 +4819,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/office/xlsx/write' && req.method === 'POST') {
     const body = await readBody(req);
     const target = expandLocalPath(body.path);
-    if (!target || !target.startsWith('/')) return json(res, 400, { error: '需要绝对路径' });
+    if (!target || !isAbsolutePath(target)) return json(res, 400, { error: '需要绝对路径' });
     if (path.extname(target).toLowerCase() !== '.xlsx') {
       return json(res, 400, { error: '目前只能保存 .xlsx（旧版 .xls 请先另存为 .xlsx）' });
     }
@@ -4471,7 +4842,7 @@ const server = http.createServer(async (req, res) => {
 
   if (p === '/api/office/pptx/outline' && req.method === 'GET') {
     const target = expandLocalPath(url.searchParams.get('path'));
-    if (!target || !target.startsWith('/')) return json(res, 400, { error: '需要绝对路径' });
+    if (!target || !isAbsolutePath(target)) return json(res, 400, { error: '需要绝对路径' });
     if (path.extname(target).toLowerCase() !== '.pptx') {
       return json(res, 400, { error: '目前只能编辑 .pptx（旧版 .ppt 请先另存为 .pptx）' });
     }
@@ -4488,7 +4859,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/office/pptx/write' && req.method === 'POST') {
     const body = await readBody(req);
     const target = expandLocalPath(body.path);
-    if (!target || !target.startsWith('/')) return json(res, 400, { error: '需要绝对路径' });
+    if (!target || !isAbsolutePath(target)) return json(res, 400, { error: '需要绝对路径' });
     if (path.extname(target).toLowerCase() !== '.pptx') {
       return json(res, 400, { error: '目前只能保存 .pptx' });
     }
@@ -4511,7 +4882,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/files/write' && req.method === 'POST') {
     const body = await readBody(req);
     const target = expandLocalPath(body.path);
-    if (!target || !target.startsWith('/')) return json(res, 400, { error: '需要绝对路径' });
+    if (!target || !isAbsolutePath(target)) return json(res, 400, { error: '需要绝对路径' });
     if (!isTextExt(target)) return json(res, 400, { error: '这个格式不支持直接编辑' });
     let st;
     try { st = fs.statSync(target); } catch { return json(res, 404, { error: '文件不存在' }); }
@@ -4599,11 +4970,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { files });
     }
     const target = cleanPath(body.path);
-    if (!target || !target.startsWith('/')) return json(res, 400, { error: '需要绝对路径' });
+    if (!target || !isAbsolutePath(target)) return json(res, 400, { error: '需要绝对路径' });
     if (!fs.existsSync(target)) return json(res, 404, { error: '文件不存在' });
     try {
-      const args = action === 'reveal' ? ['-R', target] : [target];
-      spawn('open', args, { stdio: 'ignore', detached: true }).unref();
+      if (action === 'reveal') revealPathExternal(target);
+      else openPathExternal(target);
       return json(res, 200, { ok: true });
     } catch (e) {
       return json(res, 500, { error: e.message });
@@ -4785,6 +5156,21 @@ const server = http.createServer(async (req, res) => {
         ? Math.max(0, Math.min(180, Math.round(n)))
         : 30;
     }
+    if (body.autoReportToLeader !== undefined) {
+      state.settings.autoReportToLeader = !!body.autoReportToLeader;
+    }
+    if (body.botErrorThreshold !== undefined) {
+      const n = Number(body.botErrorThreshold);
+      state.settings.botErrorThreshold = Number.isFinite(n)
+        ? Math.max(0, Math.min(10, Math.round(n)))
+        : 2;
+    }
+    if (body.flowStallMinutes !== undefined) {
+      const n = Number(body.flowStallMinutes);
+      state.settings.flowStallMinutes = Number.isFinite(n)
+        ? Math.max(0, Math.min(120, Math.round(n)))
+        : 3;
+    }
     if (body.creditPlans && typeof body.creditPlans === 'object') {
       const plans = {};
       for (const key of ['qoder', 'codebuddy']) {
@@ -4951,22 +5337,28 @@ const server = http.createServer(async (req, res) => {
             // 运行中也能改：原地替换节点定义，保留运行时状态和历史。
             // 引擎每一步都会按 id 重新查节点，所以未跑的环节会立刻用新版；
             // 已经跑过的环节要等下一轮循环才会用新版。
+            const isRunning = workflowRuns.has(chat.id);
             const runtime = {
               status: prev.status,
-              currentNodeId: prev.currentNodeId,
+              currentNodeId: isRunning ? prev.currentNodeId : null,
               startedAt: prev.startedAt,
               finishedAt: prev.finishedAt,
               history: prev.history,
               resume: prev.resume,
-              drain: prev.drain,
-              pauseRequested: prev.pauseRequested,
-              pausedByUser: prev.pausedByUser,
+              drain: isRunning ? prev.drain : null,
+              pauseRequested: isRunning ? !!prev.pauseRequested : false,
+              pausedByUser:
+                isRunning || prev.status === 'paused' ? !!prev.pausedByUser : false,
               lastError: prev.lastError,
-              reportInFlight: prev.reportInFlight,
               lastStopReportAt: prev.lastStopReportAt,
               lastStopStatus: prev.lastStopStatus,
             };
             Object.assign(prev, wf, runtime);
+            if (!isRunning) {
+              clearWorkflowTransientLocks(prev, chat, { clearDrain: true, clearStopLock: false });
+            } else {
+              delete prev.reportInFlight;
+            }
             if (prev.resume && !prev.nodes.some((n) => n.id === prev.resume.nodeId)) {
               prev.resume = null;
             }
@@ -5255,10 +5647,16 @@ const server = http.createServer(async (req, res) => {
         copy.id = uid('wf');
         copy.name = `${src.name || '流程'} 副本`.slice(0, 80);
         copy.status = 'draft';
+        copy.currentNodeId = null;
         copy.history = [];
         copy.resume = null;
+        copy.pausedByUser = false;
+        copy.lastError = '';
         copy.startedAt = null;
         copy.finishedAt = null;
+        delete copy.lastStopReportAt;
+        delete copy.lastStopStatus;
+        clearWorkflowTransientLocks(copy, null, { clearDrain: true, clearStopLock: false });
         copy.createdAt = Date.now();
         copy.updatedAt = Date.now();
         chat.workflows.push(copy);
@@ -5279,6 +5677,8 @@ const server = http.createServer(async (req, res) => {
         if (running() && id === chat.workflow?.id) {
           return json(res, 409, { error: '流程运行中，先暂停或停止再删除' });
         }
+        const target = (chat.workflows || []).find((w) => w.id === id);
+        if (target) clearStopReportLock(target, chat);
         chat.workflows = (chat.workflows || []).filter((w) => w.id !== id);
         if (chat.activeWorkflowId === id) {
           const next = chat.workflows[0] || null;
@@ -5577,6 +5977,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (agyProfileMatch && req.method === 'POST' && agyProfileMatch[2] === 'login') {
+    if (isWin) return json(res, 501, { error: 'Windows 暂不支持 Antigravity (agy) 登录' });
     if (!local) return json(res, 403, { error: 'only local' });
     const profile = agyProfileById(agyProfileMatch[1]);
     if (!profile) return json(res, 404, { error: 'profile not found' });
@@ -5690,6 +6091,63 @@ fi
     }
   }
 
+  const ensureBotGroup = (rawName) => {
+    const name = String(rawName || '').trim().slice(0, 40);
+    if (!name) return { grp: null, created: false };
+    state.botGroups ||= [];
+    const existing = state.botGroups.find((g) => g.name === name);
+    if (existing) return { grp: existing, created: false };
+    const grp = { id: uid('bgrp'), name, collapsed: false, createdAt: Date.now() };
+    state.botGroups.push(grp);
+    return { grp, created: true };
+  };
+
+  if (p === '/api/bot-groups' && req.method === 'GET') {
+    return json(res, 200, { botGroups: state.botGroups || [] });
+  }
+  if (p === '/api/bot-groups' && req.method === 'POST') {
+    const body = await readBody(req);
+    const { grp, created } = ensureBotGroup(body.name);
+    if (!grp) return json(res, 400, { error: '分组名称不能为空' });
+    if (created) {
+      saveState(state);
+      emit('botGroups', { botGroups: state.botGroups });
+    }
+    return json(res, created ? 201 : 200, grp);
+  }
+  const botGroupMatch = p.match(/^\/api\/bot-groups\/([^/]+)$/);
+  if (botGroupMatch) {
+    state.botGroups ||= [];
+    const grp = state.botGroups.find((g) => g.id === botGroupMatch[1]);
+    if (!grp) return json(res, 404, { error: 'not found' });
+    if (req.method === 'PATCH') {
+      const body = await readBody(req);
+      if (body.name !== undefined) {
+        const name = String(body.name || '').trim().slice(0, 40);
+        if (!name) return json(res, 400, { error: '分组名称不能为空' });
+        grp.name = name;
+      }
+      if (body.collapsed !== undefined) grp.collapsed = !!body.collapsed;
+      saveState(state);
+      emit('botGroups', { botGroups: state.botGroups });
+      return json(res, 200, grp);
+    }
+    if (req.method === 'DELETE') {
+      state.botGroups = state.botGroups.filter((g) => g.id !== grp.id);
+      let moved = false;
+      for (const b of state.bots) {
+        if (b.groupId === grp.id) {
+          b.groupId = null;
+          moved = true;
+        }
+      }
+      saveState(state);
+      emit('botGroups', { botGroups: state.botGroups });
+      if (moved) emit('bots', { bots: state.bots.map(publicBot) });
+      return json(res, 200, { ok: true });
+    }
+  }
+
   if (p === '/api/bots' && req.method === 'POST') {
     const body = await readBody(req);
     const backend = ['opencode', 'codex', 'agy', 'codebuddy', 'qoder', 'claude', 'custom'].includes(
@@ -5768,6 +6226,15 @@ fi
       }
     }
     state.bots.push(bot);
+    let groupCreated = false;
+    if (body.group !== undefined) {
+      const { grp, created } = ensureBotGroup(body.group);
+      bot.groupId = grp ? grp.id : null;
+      groupCreated = created;
+    } else if (body.groupId !== undefined) {
+      const gid = body.groupId ? String(body.groupId) : null;
+      bot.groupId = gid && (state.botGroups || []).some((g) => g.id === gid) ? gid : null;
+    }
     state.settings ||= { leaderId: null };
     // 第一个 Bot 自动成为领导；之后保持用户已选的领导
     if (!state.settings.leaderId || !state.bots.some((b) => b.id === state.settings.leaderId)) {
@@ -5801,6 +6268,7 @@ fi
     }
     state.settings.setupDone = true;
     saveState(state);
+    if (groupCreated) emit('botGroups', { botGroups: state.botGroups });
     emit('bots', { bots: state.bots.map(publicBot) });
     if (dmChatId) emit('chats', { chats: state.chats });
     return json(res, 200, { ...bot, dmChatId });
@@ -5861,6 +6329,15 @@ fi
         bot.sessions = {};
       }
       if (body.hidden !== undefined) bot.hidden = !!body.hidden;
+      let groupCreated = false;
+      if (body.group !== undefined) {
+        const { grp, created } = ensureBotGroup(body.group);
+        bot.groupId = grp ? grp.id : null;
+        groupCreated = created;
+      } else if (body.groupId !== undefined) {
+        const gid = body.groupId ? String(body.groupId) : null;
+        bot.groupId = gid && (state.botGroups || []).some((g) => g.id === gid) ? gid : null;
+      }
       if (body.lastChatId !== undefined) {
         bot.lastChatId = String(body.lastChatId || '').slice(0, 80);
       }
@@ -5885,6 +6362,7 @@ fi
       normalizeSource(bot);
       applyDerivedSource(bot);
       saveState(state);
+      if (groupCreated) emit('botGroups', { botGroups: state.botGroups });
       emit('bots', { bots: state.bots.map(publicBot) });
       return json(res, 200, bot);
     }
@@ -5980,7 +6458,108 @@ fi
   serveStatic(req, res, p);
 });
 
-export async function startServer({ port = PORT, host = process.env.BOT_TEAM_HOST || '0.0.0.0' } = {}) {
+let watchdogTimer = null;
+const orphanWorkflowTicks = new Map();
+const idleLoopTicks = new Map();
+
+export function checkWorkflowHealth(now = Date.now()) {
+  if (shuttingDown || state.settings?.autoReportToLeader === false) return;
+  const stallMinsRaw = Number(state.settings?.flowStallMinutes ?? 3);
+  const stallMs =
+    Number.isFinite(stallMinsRaw) && stallMinsRaw > 0 ? stallMinsRaw * 60000 : 0;
+
+  for (const chat of state.chats) {
+    const wf = chat.workflow;
+    if (wf && ['running', 'draining'].includes(wf.status) && !wf.pausedByUser) {
+      const run = workflowRuns.get(chat.id);
+      if (!run) {
+        const prev = orphanWorkflowTicks.get(chat.id) || now;
+        orphanWorkflowTicks.set(chat.id, prev);
+        if (now - prev >= 30000) {
+          orphanWorkflowTicks.delete(chat.id);
+          wf.status = 'paused';
+          wf.currentNodeId = null;
+          wf.pausedByUser = false;
+          wf.lastError = '检测到流程标为运行中但实际已无执行器（孤立状态）';
+          clearWorkflowTransientLocks(wf, chat, { clearDrain: true, clearStopLock: true });
+          saveState(state);
+          emit('chats', { chats: state.chats });
+          void notifyLeaderWorkflowStall(
+            chat,
+            wf,
+            '流程状态仍显示运行中，但后端已没有活动执行实例（已转为可续跑状态）'
+          );
+        }
+        continue;
+      }
+      orphanWorkflowTicks.delete(chat.id);
+
+      const hasActiveWorker = (run.activeWorkers?.size || 0) > 0 || !!run.inSupervisor;
+      const hasLiveBot = (chat.botIds || []).some((id) => {
+        const rt = runtime.get(id);
+        return rt?.running && rt?.chatId === chat.id;
+      });
+      if (!hasActiveWorker && !hasLiveBot && stallMs > 0) {
+        const lastAt = run.lastProgressAt || run.startedAt || now;
+        const idleMs = now - lastAt;
+        if (idleMs >= stallMs) {
+          void notifyLeaderWorkflowStall(
+            chat,
+            wf,
+            `流程状态为「${wf.status}」，但已连续 ${Math.round(
+              idleMs / 60000
+            )} 分钟没有任何 Bot 在干活且无进度更新`,
+            { idleMs }
+          );
+        }
+      }
+    } else {
+      orphanWorkflowTicks.delete(chat.id);
+    }
+
+    if (chat.type === 'group' && chat.loop && stallMs > 0) {
+      const hasTimer = loopTimers.has(chat.id);
+      const hasQueueTurn = runAborts.has(chat.id);
+      const hasLiveBot = (chat.botIds || []).some((id) => {
+        const rt = runtime.get(id);
+        return rt?.running && rt?.chatId === chat.id;
+      });
+      if (!hasTimer && !hasQueueTurn && !hasLiveBot) {
+        const prev = idleLoopTicks.get(chat.id) || now;
+        idleLoopTicks.set(chat.id, prev);
+        if (now - prev >= stallMs) {
+          idleLoopTicks.delete(chat.id);
+          void dispatchLeaderDmAlert({
+            dedupKey: `loop_stall:${chat.id}`,
+            cooldownMs: Math.max(2, stallMinsRaw) * 60000,
+            systemText: `持续运行停滞告警：${chat.title}`,
+            prompt: [
+              '【工作流停滞告警 · 强制】',
+              `群：${chat.title}（chatId=${chat.id}）`,
+              `异常：群持续运行（loop=true，第 ${chat.loopRound || 0} 轮）但既无定时器也无活跃 Bot 执行超过 ${Math.round(
+                (now - prev) / 60000
+              )} 分钟。`,
+              `请用 node "$BOT_TEAM_CLI" chats 与 status 检查该群状态，必要时发指令恢复或关闭循环。`,
+            ].join('\n'),
+            chat,
+          });
+        }
+      } else {
+        idleLoopTicks.delete(chat.id);
+      }
+    } else {
+      idleLoopTicks.delete(chat.id);
+    }
+  }
+}
+
+function startWorkflowWatchdog() {
+  if (watchdogTimer) return;
+  watchdogTimer = setInterval(() => checkWorkflowHealth(), 30000);
+  watchdogTimer.unref?.();
+}
+
+export async function startServer({ port = PORT, host = process.env.BOT_TEAM_HOST || (isWin ? '127.0.0.1' : '0.0.0.0') } = {}) {
   // 先按设置 / 环境变量 / 系统代理配置出口；系统代理会先做 500ms 连通性检查
   await setupProxy(state.settings?.proxy || '').catch(() => '');
   // 上一轮进程被强杀/崩溃时留下的 CLI 孤儿，先回收，避免白占额度和管道。
@@ -5998,29 +6577,58 @@ export async function startServer({ port = PORT, host = process.env.BOT_TEAM_HOS
       const actual = server.address().port;
       serverPort = actual;
       process.env.BOT_TEAM_URL = `http://127.0.0.1:${actual}`;
-      // 上次退出时还标着「运行中」的流程，其实已经没有实例了，标成「已中断」让它能续跑
+      // 上次退出时还标着「运行中」的流程，其实已经没有实例了，标成「已中断」让它能续跑，并顺便清掉所有残留瞬时锁
       let healed = false;
       const interrupted = [];
       for (const chat of state.chats) {
         const wf = chat.workflow;
-        if (wf && ['running', 'draining'].includes(wf.status) && !workflowRuns.has(chat.id)) {
+        if (
+          wf &&
+          (wf.interruptedOnBoot ||
+            (['running', 'draining'].includes(wf.status) && !workflowRuns.has(chat.id)))
+        ) {
           wf.status = 'paused';
-          wf.drain = null;
+          wf.currentNodeId = null;
           wf.pausedByUser = false;
+          clearWorkflowTransientLocks(wf, chat, { clearDrain: true });
           healed = true;
           interrupted.push(chat);
+        }
+        const activeId = chat.activeWorkflowId || wf?.id || '';
+        const isActiveWf = (w) => w === wf || (!!activeId && w.id === activeId);
+        const wfs = new Set(
+          [wf, ...(Array.isArray(chat.workflows) ? chat.workflows : [])].filter(Boolean)
+        );
+        for (const w of wfs) {
+          if ('reportInFlight' in w || w.pauseRequested || 'interruptedOnBoot' in w) {
+            clearWorkflowTransientLocks(w, chat, {
+              clearDrain: ['running', 'draining'].includes(w.status),
+            });
+            healed = true;
+          }
+          if (!isActiveWf(w) && ['running', 'draining'].includes(w.status)) {
+            w.status = 'paused';
+            w.currentNodeId = null;
+            w.pausedByUser = false;
+            clearWorkflowTransientLocks(w, chat, { clearDrain: true });
+            healed = true;
+          }
         }
       }
       if (healed) saveState(state);
       if (interrupted.length) {
-        setTimeout(() => {
+        const t = setTimeout(() => {
+          if (shuttingDown) return;
           for (const c of interrupted) {
+            if (!c.workflow || workflowRuns.has(c.id) || c.workflow.status === 'running') continue;
             void notifyLeaderWorkflowStop(c, c.workflow, 'interrupted', null);
           }
         }, 4000);
+        t.unref?.();
       }
       for (const chat of state.chats) if (chat.loop) scheduleLoop(chat, 5000);
       startScheduleTicker();
+      startWorkflowWatchdog();
       refreshTailscale().catch(() => {});
       if (state.settings.remoteAuto) {
         setTimeout(() => {
@@ -6034,6 +6642,14 @@ export async function startServer({ port = PORT, host = process.env.BOT_TEAM_HOS
 
 export function stopServer() {
   stopTunnel();
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+  if (scheduleTimer) {
+    clearInterval(scheduleTimer);
+    scheduleTimer = null;
+  }
   return new Promise((resolve) => server.close(() => resolve()));
 }
 

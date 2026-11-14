@@ -12,6 +12,7 @@
     "dev": "node --watch server.mjs",
     "desktop": "electron .",
     "dist": "electron-builder --mac dmg",
+    "dist:win": "electron-builder --win nsis portable --x64 --publish never",
     "check": "node scripts/check-syntax.mjs",
     "dist:all": "electron-builder --mac dmg zip --arm64 --x64 --publish never",
     "sign:check": "bash scripts/check-signing.sh"
@@ -69,19 +70,47 @@
       ]
     },
     "afterSign": "build/notarize.cjs",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "Bot-Team-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "Bot-Team-${version}-${arch}-portable.${ext}"
+    },
     "artifactName": "Bot-Team-${version}-${arch}.${ext}"
   },
   "devDependencies": {
+    "@electron/notarize": "^3.0.1",
     "electron": "^45.2.2",
     "electron-builder": "^26.18.0",
     "katex": "^0.19.1",
-    "mammoth": "^1.13.0",
     "mermaid": "^12.3.0",
     "pdfjs-dist": "^5.5.207",
     "pptx-preview": "^1.0.7",
     "turndown": "^7.2.5",
-    "xlsx": "^0.18.5",
-    "@electron/notarize": "^3.0.1"
+    "xlsx": "^0.18.5"
   },
   "license": "MIT",
   "repository": {
@@ -103,9 +132,12 @@
     "antigravity",
     "workbuddy",
     "qoder",
+    "windows",
     "macos"
   ],
   "dependencies": {
+    "cross-spawn": "^7.0.6",
+    "mammoth": "^1.13.0",
     "undici": "^7.30.1"
   }
 }

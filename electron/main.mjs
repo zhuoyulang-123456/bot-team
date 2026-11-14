@@ -18,6 +18,30 @@ app.setAboutPanelOptions({
    否则 opencode / codex / agy 全都找不到。 */
 function fixPath() {
   const home = os.homedir();
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    const extra = [
+      path.join(appData, 'npm'),
+      path.join(localAppData, 'Programs'),
+      path.join(localAppData, 'Microsoft', 'WinGet', 'Packages'),
+      path.join(localAppData, 'Volta', 'bin'),
+      path.join(home, '.volta', 'bin'),
+      path.join(home, '.bun', 'bin'),
+      path.join(home, '.opencode', 'bin'),
+      path.join(home, '.local', 'bin'),
+      path.join(programFiles, 'nodejs'),
+      path.join(programFiles, 'Git', 'cmd'),
+      'C:\\ffmpeg\\bin',
+    ];
+    const parts = new Set(
+      [process.env.PATH, ...extra].filter(Boolean).join(path.delimiter).split(path.delimiter).filter(Boolean)
+    );
+    process.env.PATH = [...parts].join(path.delimiter);
+    return;
+  }
+
   const extra = [
     path.join(home, '.local/lib/node/bin'),
     path.join(home, '.local/bin'),
@@ -47,9 +71,13 @@ function fixPath() {
   } catch {}
 
   const parts = new Set(
-    [loginPath, process.env.PATH, ...extra].filter(Boolean).join(':').split(':').filter(Boolean)
+    [loginPath, process.env.PATH, ...extra]
+      .filter(Boolean)
+      .join(path.delimiter)
+      .split(path.delimiter)
+      .filter(Boolean)
   );
-  process.env.PATH = [...parts].join(':');
+  process.env.PATH = [...parts].join(path.delimiter);
 }
 
 let win = null;
@@ -63,7 +91,8 @@ async function bootServer() {
 
   // 必须在设置 BOT_TEAM_HOME 之后再加载，store.mjs 会读它决定数据目录。
   const { startServer } = await import('../server.mjs');
-  const { port } = await startServer({ port: 0 });
+  const host = process.env.BOT_TEAM_HOST || '127.0.0.1';
+  const { port } = await startServer({ port: 0, host });
   serverUrl = `http://127.0.0.1:${port}`;
 }
 
@@ -75,8 +104,9 @@ function createWindow() {
     minHeight: 620,
     show: false,
     backgroundColor: '#0b0c10',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 18, y: 17 },
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 17 } }
+      : { titleBarStyle: 'default' }),
     title: APP_NAME,
     webPreferences: {
       preload: path.join(import.meta.dirname, 'preload.cjs'),
@@ -130,7 +160,19 @@ function buildMenu() {
             ],
           },
         ]
-      : []),
+      : [
+          {
+            label: '文件',
+            submenu: [
+              {
+                label: '打开数据文件夹',
+                click: () => shell.openPath(app.getPath('userData')),
+              },
+              { type: 'separator' },
+              { role: 'quit', label: `退出 ${APP_NAME}` },
+            ],
+          },
+        ]),
     {
       label: '编辑',
       submenu: [

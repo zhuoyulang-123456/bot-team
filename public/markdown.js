@@ -104,7 +104,7 @@
   function linkifyFiles(root) {
     // 允许路径里带空格（Application Support/Bot Team），以第一个扩展名收住
     const re =
-      /(?:~\/|\/(?:Users|tmp|private|Volumes|opt|var|home)\/)[^\n<>"'`|]*?\.[A-Za-z0-9]{1,8}(?=$|[\s，。；：、！？）】》,.!?])/g;
+      /(?:~\/|[A-Za-z]:[\\/]|\/(?:Users|tmp|private|Volumes|opt|var|home)\/)[^\n<>"'`|]*?\.[A-Za-z0-9]{1,8}(?=$|[\s，。；：、！？）】》,.!?])/g;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes = [];
     while (walker.nextNode()) nodes.push(walker.currentNode);
@@ -129,7 +129,7 @@
         a.href = '#';
         a.dataset.btFile = filePath;
         a.title = filePath;
-        a.textContent = filePath.split('/').pop();
+        a.textContent = filePath.split(/[/\\]/).pop();
         frag.appendChild(a);
         if (trail) frag.appendChild(document.createTextNode(trail));
         last = m.index + raw.length;

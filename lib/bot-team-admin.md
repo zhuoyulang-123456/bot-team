@@ -348,6 +348,10 @@ node "$BOT_TEAM_CLI" logs <chatId> 30
 - `model` 留空表示跟随 Bot 当前模型；填了就用这个模型跑该环节。
 - `maxSteps` 防止循环流程无限跑，默认 50，最大 200。
 - 流程运行时会自动停止该群的持续运行；两者不要同时开。
+- 运维巡检与自动汇报设置（`PATCH /api/settings`）：
+  - `autoReportToLeader`（boolean，默认 `true`）：当成员额度不足、异常停止、连续报错或流程停滞（运行中但无人干活）时，自动通知领导 Bot。
+  - `botErrorThreshold`（integer，默认 `2`）：同一 Bot 连续报错达到该次数时上报领导（`0` = 仅额度与严重停止时上报）。
+  - `flowStallMinutes`（integer，默认 `3`）：流程处于运行中/收尾中却无人执行且无进度超过该分钟数时告警领导（`0` = 关闭）。
 
 CLI：
 

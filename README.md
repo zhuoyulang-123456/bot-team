@@ -19,11 +19,14 @@
 ## 下载与安装
 
 - Releases：<https://github.com/zhuoyulang-123456/bot-team/releases>
-- Apple Silicon 选 `Bot-Team-<version>-arm64.dmg`；Intel Mac 选 `Bot-Team-<version>-x64.dmg`
-- 当前包默认未签名/未公证，第一次打开如果提示「无法验证开发者」：右键 App →「打开」，或在终端执行：
-  ```bash
-  xattr -dr com.apple.quarantine "/Applications/Bot Team.app"
-  ```
+- macOS：Apple Silicon 选 `Bot-Team-<version>-arm64.dmg`；Intel Mac 选 `Bot-Team-<version>-x64.dmg`
+- Windows 10/11 x64：选 `Bot-Team-<version>-x64.exe`（NSIS 安装包，支持 per-user 安装，无需管理员权限）或 `Bot-Team-<version>-x64-portable.exe`（免安装便携版）
+- 当前包默认未签名/未公证：
+  - macOS 第一次打开如果提示「无法验证开发者」：右键 App →「打开」，或在终端执行：
+    ```bash
+    xattr -dr com.apple.quarantine "/Applications/Bot Team.app"
+    ```
+  - Windows 第一次运行如果弹出 SmartScreen 提示：点「更多信息」→「仍要运行」
 - 安装后第一次启动会走「本机环境」向导；不装任何 CLI 也能用「自定义 API」开始。
 
 ## 跑起来
@@ -87,8 +90,16 @@ npm run dist         # 打包成 dmg，产物在 release/
 ```bash
 npm run dist        # 当前机器架构，dmg
 npm run dist:all    # arm64 + x64，dmg + zip
+npm run dist:win    # Windows x64，NSIS 安装包 + portable 便携版
 npm run check       # 全仓库 JS 语法检查
 ```
+
+### Windows 版说明与限制
+
+- 数据目录位于 `%APPDATA%\Bot Team\`，卸载安装包默认保留本地数据
+- 桌面版默认仅监听 `127.0.0.1`（避免触发 Windows 防火墙弹窗）
+- Windows 支持 `opencode`、`codex`、`claude`、`agy`（Antigravity CLI）、`codebuddy`（WorkBuddy）、`qoderclicn`（Qoder）及自定义 API 后端
+- Windows 暂不支持的功能（已做安全降级/提示）：macOS Keychain / Antigravity App 实时配额读取、浏览器 Cookie 自动同步（MiMo 请使用 App 内登录或手动填写 Cookie）、QuickLook 文件缩略图、`.docx` 保存与 `.doc` 旧格式文本提取
 
 - 未签名的包在别人 Mac 上会被 Gatekeeper 拦。可以右键 →「打开」，或：
   ```bash

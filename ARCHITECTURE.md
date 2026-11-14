@@ -314,7 +314,6 @@ bot-team/
   "pausedByUser": false,
   "lastError": "",
   "startedAt": 0, "finishedAt": 0,
-  "reportInFlight": false,            // 停止审查防重入
   "lastStopReportAt": 0,
   "lastStopStatus": "done|error|…",
   "createdAt": 0, "updatedAt": 0
@@ -640,7 +639,7 @@ draft → running → done / paused / stopped / error
 - `stopWorkflow`：设置 `run.cancel`，中断子进程；触发停止审查。
 - `drainWorkflow`：平滑收尾，当前环节做完后跳到上传/交付环节；不触发停止审查。
 - 正常结束（done）、报错（error）、命中停止条件、达到 maxSteps、`@@FLOW_END`、启动时发现中断 → 都会通知领导 Bot 审查（`notifyLeaderWorkflowStop`）。
-- 审查写入领导的最新 DM 项目；只用 `reportInFlight` 防重入，没有时间窗口去重。
+- 审查写入领导的最新 DM 项目；防重入锁（`stopReportLocks`）只保存在进程内存中并用令牌校验释放，启动与重新运行流程时自动清理瞬时锁。
 
 ### 8.2 执行循环（`server.mjs#runWorkflow`）
 
