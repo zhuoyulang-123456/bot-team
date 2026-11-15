@@ -25,7 +25,7 @@ const S = {
   usageBalanceTab: 'api',
   lastUsageSummary: null,
   lastBalances: null,
-  models: { opencode: [], agy: [], codex: [], codebuddy: [], qoder: [] },
+  models: { opencode: [], agy: [], codex: [], codebuddy: [], qoder: [], copilot: [], kimi: [], qwen: [], vibe: [], mcode: [], dsh: [] },
   agyProfileModels: {},
   sources: [],
   avatars: [],
@@ -250,6 +250,8 @@ function modelDisplayName(id) {
   return String(id).split('/').pop();
 }
 
+const DEFAULT_MODEL_BACKENDS = ['codex', 'codebuddy', 'qoder', 'copilot', 'kimi', 'qwen', 'vibe', 'mcode', 'dsh'];
+
 function renderModelPill() {
   const bot = composerBot();
   const btn = $('#modelBtn');
@@ -260,7 +262,7 @@ function renderModelPill() {
   btn.hidden = false;
   const label = bot.model
     ? modelDisplayName(bot.model)
-    : ['codex', 'codebuddy', 'qoder'].includes(bot.backend)
+    : DEFAULT_MODEL_BACKENDS.includes(bot.backend)
       ? '默认模型'
       : '未设置模型';
   $('#modelPillLabel').textContent = label;
@@ -294,7 +296,7 @@ function renderModelList(bot, query = '') {
         ? 'CLI 上可能几分钟无响应，建议选 Flash'
         : '',
   }));
-  if (['codex', 'codebuddy', 'qoder'].includes(bot.backend))
+  if (DEFAULT_MODEL_BACKENDS.includes(bot.backend))
     items.unshift({ id: '', name: '默认模型', sub: '留空使用 CLI 默认' });
 
   const rows = items.filter(
@@ -2602,6 +2604,12 @@ const DEFAULT_SOURCE_BY_BACKEND = {
   codebuddy: 'WorkBuddy 中国版',
   qoder: 'Qoder 中国版',
   claude: 'Claude 订阅',
+  copilot: 'GitHub Copilot',
+  kimi: 'Kimi Code',
+  qwen: 'Qwen Code',
+  vibe: 'Mistral Vibe',
+  mcode: 'MiniMax Code',
+  dsh: 'DeepSeek Harness',
   custom: '自定义 API',
 };
 
@@ -2718,6 +2726,12 @@ function modelsFor(backend, sourceName, agyProfileId = '') {
   else if (backend === 'codex') all = (S.models.codex || []).map((m) => m.id);
   else if (backend === 'codebuddy') all = S.models.codebuddy || [];
   else if (backend === 'qoder') all = S.models.qoder || [];
+  else if (backend === 'copilot') all = S.models.copilot || ['gpt-5', 'claude-sonnet-4.5', 'o4-mini'];
+  else if (backend === 'kimi') all = S.models.kimi || ['kimi-k2.5', 'kimi-k2-thinking'];
+  else if (backend === 'qwen') all = S.models.qwen || ['qwen3-coder-plus', 'qwen3-max'];
+  else if (backend === 'vibe') all = S.models.vibe || ['devstral-small-2505', 'mistral-large-latest'];
+  else if (backend === 'mcode') all = S.models.mcode || ['MiniMax-M2.7', 'MiniMax-M2.5'];
+  else if (backend === 'dsh') all = S.models.dsh || ['deepseek-chat', 'deepseek-reasoner'];
   else if (backend === 'claude')
     all = [
       'claude-sonnet-5-5',
@@ -2779,6 +2793,12 @@ function sourceForModel(backend, model) {
   if (backend === 'codebuddy') return sourceMeta('WorkBuddy 中国版');
   if (backend === 'qoder') return sourceMeta('Qoder 中国版');
   if (backend === 'claude') return sourceMeta('Claude 订阅');
+  if (backend === 'copilot') return sourceMeta('GitHub Copilot');
+  if (backend === 'kimi') return sourceMeta('Kimi Code');
+  if (backend === 'qwen') return sourceMeta('Qwen Code');
+  if (backend === 'vibe') return sourceMeta('Mistral Vibe');
+  if (backend === 'mcode') return sourceMeta('MiniMax Code');
+  if (backend === 'dsh') return sourceMeta('DeepSeek Harness');
   if (backend === 'custom') return sourceMeta('自定义 API');
   const p = modelProvider(model);
   if (!p) return null;
@@ -4856,6 +4876,12 @@ function botForm(bot) {
           <option value="agy"${b.backend === 'agy' ? ' selected' : ''}>Antigravity（agy CLI）</option>
           <option value="codebuddy"${b.backend === 'codebuddy' ? ' selected' : ''}>WorkBuddy 中国版（codebuddy CLI）</option>
           <option value="qoder"${b.backend === 'qoder' ? ' selected' : ''}>Qoder 中国版（qoderclicn CLI）</option>
+          <option value="copilot"${b.backend === 'copilot' ? ' selected' : ''}>GitHub Copilot（copilot CLI）</option>
+          <option value="kimi"${b.backend === 'kimi' ? ' selected' : ''}>Kimi Code（kimi CLI）</option>
+          <option value="qwen"${b.backend === 'qwen' ? ' selected' : ''}>Qwen Code（qwen CLI）</option>
+          <option value="vibe"${b.backend === 'vibe' ? ' selected' : ''}>Mistral Vibe（vibe CLI）</option>
+          <option value="mcode"${b.backend === 'mcode' ? ' selected' : ''}>MiniMax Code（mcode CLI）</option>
+          <option value="dsh"${b.backend === 'dsh' ? ' selected' : ''}>DeepSeek Harness（dsh CLI）</option>
           <option value="custom"${b.backend === 'custom' ? ' selected' : ''}>自定义 API（URL + Key，无需 CLI）</option>
         </select>
         <div class="field-hint" id="fBackendHint"></div>
@@ -5271,9 +5297,9 @@ function wireBotForm() {
       sourceVal = custom ? '自定义 API' : 'ChatGPT Plus';
       bill = custom ? 'payg' : 'subscription';
       lock = true;
-    } else if (['agy', 'codebuddy', 'qoder'].includes(be)) {
+    } else if (['agy', 'codebuddy', 'qoder', 'copilot', 'kimi', 'qwen', 'vibe', 'mcode', 'dsh'].includes(be)) {
       sourceVal = DEFAULT_SOURCE_BY_BACKEND[be];
-      bill = 'subscription';
+      bill = ['vibe', 'dsh'].includes(be) ? 'payg' : 'subscription';
       lock = true;
     } else {
       const meta = sourceMeta(src.value);
@@ -5470,7 +5496,7 @@ function wireBotForm() {
     if (!picker || picker.hidden || !listEl) return;
     const q = ($('#fModelSearch')?.value || '').trim().toLowerCase();
     let items = effectiveModels();
-    if (['codex', 'codebuddy', 'qoder'].includes(backend.value) && !isCustomApi()) items = ['', ...items];
+    if (DEFAULT_MODEL_BACKENDS.includes(backend.value) && !isCustomApi()) items = ['', ...items];
     const rows = items.filter((id) => {
       if (!q) return true;
       const name = modelDisplayName(id).toLowerCase();
@@ -5523,6 +5549,8 @@ function wireBotForm() {
       text = list.length ? `WorkBuddy：${list.length} 个模型 · 留空用默认` : 'WorkBuddy 可留空用默认模型';
     } else if (backend.value === 'qoder') {
       text = list.length ? `Qoder：${list.length} 个模型 · 留空用默认` : 'Qoder 可留空用默认模型';
+    } else if (['copilot', 'kimi', 'qwen', 'vibe', 'mcode', 'dsh'].includes(backend.value)) {
+      text = `${DEFAULT_SOURCE_BY_BACKEND[backend.value] || backend.value}：可留空用 CLI 默认模型，或从列表/手动指定`;
     } else if (backend.value === 'agy') {
       text = `Antigravity：${list.length} 个模型`;
     } else if (meta && (meta.prefixes || []).length) {
@@ -16296,7 +16324,7 @@ async function boot() {
   S.chats = data.chats;
   S.roles = data.roles || [];
   S.agyProfiles = data.agyProfiles || [];
-  S.models = data.models || { opencode: [], agy: [], codex: [], codebuddy: [], qoder: [] };
+  S.models = data.models || { opencode: [], agy: [], codex: [], codebuddy: [], qoder: [], copilot: [], kimi: [], qwen: [], vibe: [], mcode: [], dsh: [] };
   S.agyProfileModels = {};
   if ((S.bots || []).some((b) => b.backend === 'agy')) {
     for (const profile of S.agyProfiles || []) {

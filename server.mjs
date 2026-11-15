@@ -2649,6 +2649,54 @@ const SETUP_BACKENDS = [
     note: 'Qoder 中国版积分',
   },
   {
+    id: 'copilot',
+    name: 'GitHub Copilot',
+    cmd: 'copilot',
+    install: 'npm i -g @github/copilot',
+    login: 'copilot login',
+    note: 'GitHub Copilot 订阅',
+  },
+  {
+    id: 'kimi',
+    name: 'Kimi Code',
+    cmd: 'kimi',
+    install: 'uv tool install kimi-cli',
+    login: 'kimi login',
+    note: 'Kimi Code 订阅 / Moonshot API',
+  },
+  {
+    id: 'qwen',
+    name: 'Qwen Code',
+    cmd: 'qwen',
+    install: 'npm i -g @qwen-code/qwen-code',
+    login: 'qwen（OAuth 或 DashScope Key）',
+    note: '通义千问编程 CLI',
+  },
+  {
+    id: 'vibe',
+    name: 'Mistral Vibe',
+    cmd: 'vibe',
+    install: 'uv tool install mistral-vibe',
+    login: 'vibe（或配置 MISTRAL_API_KEY）',
+    note: 'Mistral 官方编码 CLI',
+  },
+  {
+    id: 'mcode',
+    name: 'MiniMax Code',
+    cmd: 'mcode',
+    install: 'npm i -g @minimax-ai/code-cli（或官方安装）',
+    login: 'mcode login / MINIMAX_API_KEY',
+    note: 'MiniMax 官方编码 CLI（mcode）',
+  },
+  {
+    id: 'dsh',
+    name: 'DeepSeek Harness',
+    cmd: 'dsh',
+    install: '安装 DeepSeek Harness CLI（dsh）',
+    login: 'dsh 登录 / DEEPSEEK_API_KEY',
+    note: 'DeepSeek Harness CLI（dsh）',
+  },
+  {
     id: 'custom',
     name: '自定义 API',
     cmd: '',
@@ -2658,6 +2706,8 @@ const SETUP_BACKENDS = [
     always: true,
   },
 ];
+
+const VALID_BACKENDS = SETUP_BACKENDS.map((b) => b.id);
 
 function hasFile(p) {
   try {
@@ -3130,7 +3180,7 @@ function snapshot() {
 
 /* ------------- model lists ------------- */
 
-let modelCache = { at: 0, opencode: [], agy: [], codex: [], codebuddy: [], qoder: [] };
+let modelCache = { at: 0, opencode: [], agy: [], codex: [], codebuddy: [], qoder: [], copilot: [], kimi: [], qwen: [], vibe: [], mcode: [], dsh: [] };
 const modelFetchCache = new Map();
 let modelRefreshing = null;
 
@@ -3186,6 +3236,12 @@ function refreshModels() {
       codex,
       codebuddy,
       qoder,
+      copilot: [],
+      kimi: [],
+      qwen: [],
+      vibe: [],
+      mcode: [],
+      dsh: [],
     };
     // 旧数据里“来源”和模型 provider 对不上的，趁模型列表刚拿到修一遍
     if (repairSources(state.bots, modelCache)) {
@@ -6274,11 +6330,7 @@ fi
 
   if (p === '/api/bots' && req.method === 'POST') {
     const body = await readBody(req);
-    const backend = ['opencode', 'codex', 'agy', 'codebuddy', 'qoder', 'claude', 'custom'].includes(
-      body.backend
-    )
-      ? body.backend
-      : 'opencode';
+    const backend = VALID_BACKENDS.includes(body.backend) ? body.backend : 'opencode';
     const model = String(body.model || '');
     const source = String(body.source || '');
     const name = String(body.name || '新成员').slice(0, 40);
@@ -6401,7 +6453,7 @@ fi
       if (body.avatar !== undefined) bot.avatar = String(body.avatar);
       if (body.color !== undefined) bot.color = String(body.color);
       if (body.backend !== undefined) {
-        if (['opencode', 'codex', 'agy', 'codebuddy', 'qoder', 'claude', 'custom'].includes(body.backend)) {
+        if (VALID_BACKENDS.includes(body.backend)) {
           if (bot.backend !== body.backend) bot.sessions = {};
           bot.backend = body.backend;
         }
@@ -6561,6 +6613,12 @@ fi
         codebuddy: pick('codebuddy'),
         qoder: pick('qoderclicn'),
         claude: pick('claude'),
+        copilot: pick('copilot'),
+        kimi: pick('kimi'),
+        qwen: pick('qwen'),
+        vibe: pick('vibe'),
+        mcode: pick('mcode'),
+        dsh: pick('dsh'),
       },
       dataDir: DATA_DIR,
       workdir: BOTS_DIR,
