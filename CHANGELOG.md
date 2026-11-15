@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3 — 2026-11-16
+
+依赖安全升级，无功能变更。
+
+- SheetJS (`xlsx`) 0.18.5 → 0.20.3（修复原型污染与 ReDoS），并同步更新 `public/vendor/xlsx.full.min.js`
+- 通过 `overrides` 将 `minimatch`、`uuid`、`echarts` 提升到已修复版本，`npm audit` 归零
+- 打包链路在 macOS 上实测通过（arm64 打包完整跑通）
+
 ## 0.1.2 — 2026-11-16
 
 体验与可靠性修复，重点是「新成员用不了」「回复答非所问」「技能像空壳」。
