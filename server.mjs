@@ -3270,6 +3270,9 @@ function readSkills(force = false) {
       seen.add(name);
       skills.push({
         name,
+        // 目录名经常和 frontmatter 里的 name 不一致（例如目录叫 xxx-pipeline、name 叫别的），
+        // 两个都要能匹配得上，否则职位里引用的技能会被误判成「没装」。
+        dir: d.name,
         desc,
         path: path.join(root, d.name),
         bundled: path.resolve(root) === path.resolve(BUNDLED_SKILLS_DIR),
@@ -3301,12 +3304,20 @@ function skillSummaryFor(name, desc) {
 }
 
 function skillsForClient() {
-  return readSkills().map((s) => ({ ...s, summary: skillSummaryFor(s.name, s.desc) }));
+  return readSkills().map((s) => ({
+    ...s,
+    aliases: [...new Set([s.name, s.dir].filter(Boolean))],
+    summary: skillSummaryFor(s.name, s.desc),
+  }));
 }
 
 /** 预设岗位引用了、但本机确实没装上的技能：告诉前端哪些能一键装、哪些要手动导入 */
 function missingPresetSkills() {
-  const have = new Set(readSkills().map((s) => s.name));
+  const have = new Set();
+  for (const s of readSkills()) {
+    if (s.name) have.add(s.name);
+    if (s.dir) have.add(s.dir);
+  }
   const wanted = new Map();
   for (const role of state.roles || []) {
     for (const name of role.skills || []) {

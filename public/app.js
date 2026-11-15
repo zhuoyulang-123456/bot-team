@@ -3466,10 +3466,29 @@ function skillSameList(a, b) {
   return y.every((n) => set.has(n));
 }
 
+// 技能目录名和 SKILL.md 里的 name 经常不一致，统一映射到 name 再比较，
+// 否则职位里引用了技能、界面却显示没勾上（看着像空壳）。
+function skillAliasMap() {
+  const map = new Map();
+  for (const s of S.skills || []) {
+    const names = [s.name, s.dir, ...(s.aliases || [])].filter(Boolean).map(String);
+    for (const n of names) map.set(n, String(s.name || n));
+  }
+  return map;
+}
+
+function canonicalSkillName(name) {
+  const key = String(name || '').trim();
+  if (!key) return '';
+  return skillAliasMap().get(key) || key;
+}
+
 function skillSelectedFor(type, id, target) {
+  const map = skillAliasMap();
+  const canon = (list) => [...new Set((list || []).map(String).map((x) => map.get(x) || x))];
   const draft = S.skillDrafts?.[skillDraftKey(type, id)];
-  if (Array.isArray(draft)) return draft.map(String);
-  return (target?.skills || []).map(String);
+  if (Array.isArray(draft)) return canon(draft);
+  return canon(target?.skills);
 }
 
 function patchSkillTarget(type, id, skills) {
