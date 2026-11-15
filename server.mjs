@@ -65,6 +65,7 @@ import {
   revealPathExternal,
 } from './lib/platform.mjs';
 import { DEFAULT_FLOW_DESIGN_RULES } from './lib/flow-rules.mjs';
+import { BUNDLED_SKILLS_DIR, skillSourceOf, isInstallable } from './lib/skill-presets.mjs';
 import { translateTexts, explainText, summarizeText, rewriteText } from './lib/translate.mjs';
 
 const PORT = Number(process.env.PORT || 4820);
@@ -3225,6 +3226,8 @@ function frontmatterField(block, key) {
 function readSkills(force = false) {
   if (!force && Date.now() - skillsCache.at < 5 * 60 * 1000) return skillsCache.skills;
   const roots = [
+    // 仓库自带的技能优先，保证预设岗位在全新机器上也不是空壳
+    BUNDLED_SKILLS_DIR,
     path.join(os.homedir(), '.agents/skills'),
     path.join(os.homedir(), '.config/opencode/skills'),
     path.join(os.homedir(), '.codex/skills'),
@@ -3264,7 +3267,12 @@ function readSkills(force = false) {
       const desc = frontmatterField(block, 'description').slice(0, 4000);
       if (!name || seen.has(name)) continue;
       seen.add(name);
-      skills.push({ name, desc, path: path.join(root, d.name) });
+      skills.push({
+        name,
+        desc,
+        path: path.join(root, d.name),
+        bundled: path.resolve(root) === path.resolve(BUNDLED_SKILLS_DIR),
+      });
     }
   }
   skills.sort((a, b) => a.name.localeCompare(b.name));
@@ -3293,6 +3301,63 @@ function skillSummaryFor(name, desc) {
 
 function skillsForClient() {
   return readSkills().map((s) => ({ ...s, summary: skillSummaryFor(s.name, s.desc) }));
+}
+
+/** 预设岗位引用了、但本机确实没装上的技能：告诉前端哪些能一键装、哪些要手动导入 */
+function missingPresetSkills() {
+  const have = new Set(readSkills().map((s) => s.name));
+  const wanted = new Map();
+  for (const role of state.roles || []) {
+    for (const name of role.skills || []) {
+      const key = String(name || '').trim();
+      if (!key || have.has(key)) continue;
+      const src = skillSourceOf(key);
+      const prev = wanted.get(key);
+      const entry = prev || {
+        name: key,
+        roles: [],
+        installable: isInstallable(key),
+        label: src?.label || '',
+        hint: src?.hint || '',
+        repo: src?.repo || '',
+      };
+      if (role.name && !entry.roles.includes(role.name)) entry.roles.push(role.name);
+      wanted.set(key, entry);
+    }
+  }
+  return [...wanted.values()];
+}
+
+/** 把仓库自带的技能复制到跨工具的公共技能目录，让各 CLI 后端也能真正用到 */
+function ensureBundledSkillsInstalled() {
+  let names = [];
+  try {
+    names = fs
+      .readdirSync(BUNDLED_SKILLS_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return;
+  }
+  if (!names.length) return;
+  const target = path.join(os.homedir(), '.agents', 'skills');
+  let copied = 0;
+  for (const name of names) {
+    const src = path.join(BUNDLED_SKILLS_DIR, name);
+    const dst = path.join(target, name);
+    try {
+      if (!fs.existsSync(path.join(src, 'SKILL.md'))) continue;
+      // 已经存在（用户自己装过 / 改过）就不覆盖，避免冲掉用户的版本
+      if (fs.existsSync(path.join(dst, 'SKILL.md'))) continue;
+      fs.mkdirSync(target, { recursive: true });
+      fs.cpSync(src, dst, { recursive: true });
+      copied += 1;
+    } catch {}
+  }
+  if (copied) {
+    skillsCache.at = 0;
+    console.log(`[skills] 已释放 ${copied} 个内置技能到 ${target}`);
+  }
 }
 
 function resolveSkillTarget(type, id) {
@@ -4377,7 +4442,54 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/skills' && req.method === 'GET') {
     const force = new URL(req.url, 'http://local').searchParams.get('refresh') === '1';
     if (force) readSkills(true);
-    return json(res, 200, { skills: skillsForClient() });
+    return json(res, 200, { skills: skillsForClient(), missing: missingPresetSkills() });
+  }
+
+  // 一键安装预设岗位引用的第三方技能（只走已登记的公开源仓库）
+  if (p === '/api/skills/install-preset' && req.method === 'POST') {
+    const body = await readBody(req);
+    const names = normalizeSkillList(body.names || body.name, 20);
+    if (!names.length) return json(res, 400, { error: '没有指定技能名' });
+    const type = ['role', 'bot', 'group'].includes(body.targetType) ? body.targetType : '';
+    const target = type ? resolveSkillTarget(type, String(body.targetId || '')) : null;
+    const targetBot =
+      type === 'bot'
+        ? target
+        : type === 'group'
+          ? state.bots.find((b) => (target?.botIds || []).includes(b.id)) || null
+          : null;
+    const installed = [];
+    const failed = [];
+    for (const name of names) {
+      const src = skillSourceOf(name);
+      if (!src?.repo) {
+        failed.push({ name, error: src?.hint || '没有可用的公开源，请手动导入技能目录' });
+        continue;
+      }
+      try {
+        const got = await installSkillFromGithub(src.repo, targetBot);
+        installed.push(...got);
+      } catch (e) {
+        failed.push({ name, error: String(e?.message || e).slice(0, 300) });
+      }
+    }
+    if (installed.length && target) {
+      target.skills = normalizeSkillList([
+        ...(target.skills || []),
+        ...installed.map((x) => x.name),
+      ]);
+      saveState(state);
+      if (type === 'role') emit('roles', { roles: state.roles });
+      else if (type === 'bot') emit('bots', { bots: state.bots.map(publicBot) });
+      else emit('chats', { chats: state.chats });
+    }
+    skillsCache.at = 0;
+    return json(res, 200, {
+      installed,
+      failed,
+      skills: skillsForClient(),
+      missing: missingPresetSkills(),
+    });
   }
 
   if (p === '/api/skills/explain' && req.method === 'POST') {
@@ -6197,6 +6309,11 @@ fi
         Number.isFinite(Number(body.timeoutMin)) && Number(body.timeoutMin) > 0
           ? Math.min(Number(body.timeoutMin), 1440)
           : 0,
+      // 工具轮数上限：0/空 = 用默认值（200 轮）
+      maxToolRounds:
+        Number.isFinite(Number(body.maxToolRounds)) && Number(body.maxToolRounds) >= 0
+          ? Math.min(Number(body.maxToolRounds), 2000)
+          : 0,
       api:
         provider && backend === 'custom'
           ? {
@@ -6241,12 +6358,20 @@ fi
       state.settings.leaderId = bot.id;
     }
     let dmChatId = null;
-    if (body.chatId) {
-      const chat = state.chats.find((c) => c.id === body.chatId);
-      if (chat && !chat.botIds.includes(bot.id)) chat.botIds.push(bot.id);
-      if (chat?.type === 'group') ensureGroupProjects(state, chat);
-    } else if (!state.chats.some((c) => c.type === 'dm' && (c.botIds || []).includes(bot.id))) {
-      // 新建 Bot 时顺手建一个默认项目私聊，第一次点击就能直接聊
+    // 只有「在群里新建成员」才把它加成群成员。私聊永远不合并：
+    // 否则在领导私聊里点「+」，新 Bot 会被塞进领导的 DM，两个头像挤在一起、
+    // 消息互相串，而且新 Bot 自己没有会话，点开就是空的。
+    const targetChat = body.chatId ? state.chats.find((c) => c.id === body.chatId) : null;
+    const createdIntoGroup = targetChat?.type === 'group';
+    if (createdIntoGroup) {
+      if (!targetChat.botIds.includes(bot.id)) targetChat.botIds.push(bot.id);
+      ensureGroupProjects(state, targetChat);
+    }
+    // 每个 Bot 都必须有自己的私聊，保证第一次点开就能直接聊
+    const hasOwnDm = state.chats.some(
+      (c) => c.type === 'dm' && (c.botIds || []).length === 1 && c.botIds[0] === bot.id
+    );
+    if (!hasOwnDm) {
       const dm = {
         id: uid('chat'),
         type: 'dm',
@@ -6264,7 +6389,15 @@ fi
         createdAt: Date.now(),
       };
       state.chats.push(dm);
-      dmChatId = dm.id;
+      // 在群里建成员时不要抢走焦点：前端会留在群里
+      if (!createdIntoGroup) dmChatId = dm.id;
+    }
+    // 老数据里可能已经有别的私聊带着这个 Bot，直接复用
+    if (!dmChatId && !createdIntoGroup) {
+      const existing = state.chats.find(
+        (c) => c.type === 'dm' && (c.botIds || []).includes(bot.id) && !c.linkedGroupId
+      );
+      if (existing) dmChatId = existing.id;
     }
     state.settings.setupDone = true;
     saveState(state);
@@ -6350,6 +6483,11 @@ fi
         if (min === -1) bot.timeoutMin = -1;
         else if (Number.isFinite(min) && min > 0) bot.timeoutMin = Math.min(min, 1440);
         else bot.timeoutMin = 0;
+      }
+      if (body.maxToolRounds !== undefined) {
+        const rounds = Number(body.maxToolRounds);
+        bot.maxToolRounds =
+          Number.isFinite(rounds) && rounds >= 0 ? Math.min(rounds, 2000) : 0;
       }
       if (body.alert !== undefined) bot.alert = body.alert || null;
       if (body.source !== undefined) bot.source = String(body.source);
@@ -6570,6 +6708,10 @@ export async function startServer({ port = PORT, host = process.env.BOT_TEAM_HOS
   // 旧版本建的多账号 profile 缺 Library/Keychains，启动时补上，避免 agy 弹「找不到钥匙串」
   try {
     for (const profile of state.agyProfiles || []) ensureAgyHome(profile?.home);
+  } catch {}
+  // 把随包分发的内置技能释放到公共技能目录，保证预设岗位在全新机器上也有技能可用
+  try {
+    ensureBundledSkillsInstalled();
   } catch {}
   return new Promise((resolve, reject) => {
     server.once('error', reject);

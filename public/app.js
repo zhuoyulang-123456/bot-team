@@ -1825,12 +1825,18 @@ function renderThread() {
 
   const members = chat.botIds.map(botById).filter(Boolean);
   const lead = botById(chat.leadId) || members[0];
+  // 私聊只显示它自己的那一个头像；群聊才做成员叠层（旧数据里 DM 混进多个 Bot 时也不会丑）
+  const dmBot = chat.type === 'dm' ? botById(chat.botIds[0]) : null;
   const stack =
-    members
-      .slice(0, 3)
-      .map((b) => avatarFor(b))
-      .join('') +
-    (members.length > 3 ? `<div class="more">+${members.length - 3}</div>` : '');
+    chat.type === 'dm'
+      ? dmBot
+        ? avatarFor(dmBot)
+        : ''
+      : members
+          .slice(0, 3)
+          .map((b) => avatarFor(b))
+          .join('') +
+        (members.length > 3 ? `<div class="more">+${members.length - 3}</div>` : '');
   const wfLive = chat.workflow && ['running', 'draining'].includes(chat.workflow.status);
   const wfNode = wfLive
     ? chat.workflow.nodes?.find((n) => n.id === chat.workflow.currentNodeId)
@@ -2020,7 +2026,13 @@ async function openBot(botId) {
       chats = listFor();
     } catch {}
   }
-  let chat = chats.find((c) => c.id === bot?.lastChatId) || chats[0];
+  // 优先回到这个 Bot 自己的私聊：lastChatId 只要不是自己的会话就忽略（旧数据可能指到别人的私聊）
+  const isOwn = (c) => (c.botIds || [])[0] === botId || (c.botIds || []).length === 1;
+  let chat =
+    chats.find((c) => c.id === bot?.lastChatId && isOwn(c)) ||
+    chats.find((c) => (c.botIds || []).length === 1 && c.botIds[0] === botId) ||
+    chats.find(isOwn) ||
+    chats[0];
   if (!chat) {
     chat = await api('/api/chats', {
       method: 'POST',
@@ -3467,6 +3479,7 @@ async function openSkills() {
     return;
   }
   S.skills = data.skills || [];
+  S.skillMissing = data.missing || [];
   S.skillDrafts = {};
   const active = chatById(S.activeChatId);
   let type = 'role';
@@ -3538,6 +3551,7 @@ function drawSkillsModal() {
      <input id="skillsSearch" class="skills-search" placeholder="搜索本机 skills（名称或描述）" value="${esc(
        st.q || ''
      )}" />
+     <div class="skills-missing" id="skillsMissing" hidden></div>
      <div class="skills-summary" id="skillsSummary"></div>
      <div class="skills-list" id="skillsList"></div>
      <div class="skills-actions">
@@ -3549,6 +3563,14 @@ function drawSkillsModal() {
 
   fillSkillTargets();
   renderSkillRows();
+  renderSkillMissing();
+  $('#skillsMissing').onclick = (e) => {
+    const btn = e.target.closest('[data-install-preset]');
+    if (!btn) return;
+    const name = btn.dataset.installPreset;
+    const target = skillTargetById(st.type, st.targetId);
+    installPresetSkills(name, target ? { type: st.type, id: st.targetId } : null, btn);
+  };
   $('#skillsCloseTop').onclick = () => {
     S.skillDrafts = {};
     closeModal();
@@ -3830,7 +3852,9 @@ async function refreshSkills() {
   try {
     const data = await api('/api/skills?refresh=1');
     S.skills = data.skills || [];
+    S.skillMissing = data.missing || [];
     renderSkillRows();
+    renderSkillMissing();
     toast(`已刷新：${S.skills.length} 个 skills`);
   } catch (e) {
     toast(`刷新失败：${apiErrorText(e)}`, 'err');
@@ -3838,6 +3862,78 @@ async function refreshSkills() {
     if (btn) {
       btn.disabled = false;
       btn.textContent = '刷新';
+    }
+  }
+}
+
+/** 预设岗位引用了、但本机没装的技能：能一键装的给按钮，不能的就写清楚怎么补 */
+function renderSkillMissing() {
+  const box = $('#skillsMissing');
+  if (!box) return;
+  const list = S.skillMissing || [];
+  if (!list.length) {
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="skills-missing-head">预设岗位引用、但本机还没有的技能 · ${list.length} 个</div>
+    <div class="skills-missing-list">
+      ${list
+        .map(
+          (s) => `<div class="skills-missing-row">
+            <div class="skills-missing-main">
+              <span class="skills-missing-name">${esc(s.name)}</span>
+              <span class="skills-missing-roles">${esc((s.roles || []).join(' / '))}</span>
+              ${s.hint ? `<span class="skills-missing-hint">${esc(s.hint)}</span>` : ''}
+            </div>
+            ${
+              s.installable
+                ? `<button type="button" class="btn skills-mini-btn" data-install-preset="${esc(
+                    s.name
+                  )}">安装</button>`
+                : '<span class="skills-missing-manual">需手动导入</span>'
+            }
+          </div>`
+        )
+        .join('')}
+    </div>`;
+}
+
+async function installPresetSkills(name, target, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '安装中…';
+  }
+  try {
+    const data = await api('/api/skills/install-preset', {
+      method: 'POST',
+      body: {
+        names: [name],
+        targetType: target?.type || '',
+        targetId: target?.id || '',
+      },
+    });
+    S.skills = data.skills || S.skills;
+    S.skillMissing = data.missing || [];
+    if (data.installed?.length) {
+      // 安装成功后顺手勾到当前目标上
+      for (const it of data.installed) {
+        const st = S.skillState;
+        if (st) toggleSkill(it.name, true);
+      }
+      toast(`已安装：${data.installed.map((x) => x.name).join('、')}`);
+    }
+    const fail = data.failed?.[0];
+    if (fail) toast(`${fail.name}：${fail.error}`, 'err', 6000);
+    renderSkillRows();
+    renderSkillMissing();
+  } catch (e) {
+    toast(`安装失败：${apiErrorText(e)}`, 'err', 6000);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '安装';
     }
   }
 }
@@ -4846,6 +4942,25 @@ function botForm(bot) {
       <div class="field-hint">默认不限制运行时间，任务会正常跑完；只有你在这里显式选了分钟数，才会到点自动中止。流程环节同样遵循这个设置。</div>
     </div>
 
+    <div class="field">
+      <label>工具调用轮数上限</label>
+      <select id="fMaxToolRounds">
+        ${[
+          [0, '默认（200 轮，推荐）'],
+          [50, '50 轮'],
+          [100, '100 轮'],
+          [200, '200 轮'],
+          [500, '500 轮'],
+        ]
+          .map(([v, label]) => {
+            const cur = Number(b.maxToolRounds) > 0 ? Number(b.maxToolRounds) : 0;
+            return `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
+          })
+          .join('')}
+      </select>
+      <div class="field-hint">只对「直连 API」后端生效：一轮任务里最多连续调用多少次本机工具。跑满后 Bot 会先说清楚做到哪一步，不会直接卡住；把它调大可以支持更长的批量任务。</div>
+    </div>
+
     ${
       b.id && b.id === S.settings?.leaderId
         ? `<div class="field">
@@ -5722,6 +5837,12 @@ async function newBot(preset = null) {
         const n = Number(v);
         return Number.isFinite(n) ? n : 0;
       })(),
+      maxToolRounds: (() => {
+        const v = $('#fMaxToolRounds')?.value;
+        if (v === '' || v === undefined) return 0;
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      })(),
       flowDesignRules: $('#fFlowRules') ? $('#fFlowRules').value : undefined,
       api: ['claude', 'codex', 'custom'].includes($('#fBackend').value)
         ? {
@@ -5739,7 +5860,8 @@ async function newBot(preset = null) {
             })(),
           }
         : undefined,
-      chatId: S.activeChatId,
+      // 只有在群里新建成员才把当前会话带过去；私聊里新建 Bot 绝不能塞进现有 DM
+      chatId: chatById(S.activeChatId)?.type === 'group' ? S.activeChatId : undefined,
     };
     if (!body.source && body.model) {
       const sug = sourceForModel(body.backend, body.model);
@@ -5820,6 +5942,12 @@ async function editBot(botId) {
         if (v === '' || v === undefined) return 0;
         const n = Number(v);
         return Number.isFinite(n) ? n : 0;
+      })(),
+      maxToolRounds: (() => {
+        const v = $('#fMaxToolRounds')?.value;
+        if (v === '' || v === undefined) return 0;
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? n : 0;
       })(),
       flowDesignRules: $('#fFlowRules') ? $('#fFlowRules').value : undefined,
       api: ['claude', 'codex', 'custom'].includes($('#fBackend').value)
