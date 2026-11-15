@@ -30,6 +30,7 @@ import {
   DEFAULT_VOICE,
   normalizePermission,
   ensureGroupProjects,
+  ensureBotDm,
   botWorkspace,
 } from './lib/store.mjs';
 import {
@@ -6357,7 +6358,6 @@ fi
     if (!state.settings.leaderId || !state.bots.some((b) => b.id === state.settings.leaderId)) {
       state.settings.leaderId = bot.id;
     }
-    let dmChatId = null;
     // 只有「在群里新建成员」才把它加成群成员。私聊永远不合并：
     // 否则在领导私聊里点「+」，新 Bot 会被塞进领导的 DM，两个头像挤在一起、
     // 消息互相串，而且新 Bot 自己没有会话，点开就是空的。
@@ -6368,37 +6368,9 @@ fi
       ensureGroupProjects(state, targetChat);
     }
     // 每个 Bot 都必须有自己的私聊，保证第一次点开就能直接聊
-    const hasOwnDm = state.chats.some(
-      (c) => c.type === 'dm' && (c.botIds || []).length === 1 && c.botIds[0] === bot.id
-    );
-    if (!hasOwnDm) {
-      const dm = {
-        id: uid('chat'),
-        type: 'dm',
-        title: bot.name,
-        project: '默认项目',
-        botIds: [bot.id],
-        leadId: bot.id,
-        effort: 'auto',
-        permission: normalizePermission(undefined),
-        roleIds: {},
-        announcement: '',
-        skills: [],
-        files: [],
-        log: [],
-        createdAt: Date.now(),
-      };
-      state.chats.push(dm);
-      // 在群里建成员时不要抢走焦点：前端会留在群里
-      if (!createdIntoGroup) dmChatId = dm.id;
-    }
-    // 老数据里可能已经有别的私聊带着这个 Bot，直接复用
-    if (!dmChatId && !createdIntoGroup) {
-      const existing = state.chats.find(
-        (c) => c.type === 'dm' && (c.botIds || []).includes(bot.id) && !c.linkedGroupId
-      );
-      if (existing) dmChatId = existing.id;
-    }
+    const ownDm = ensureBotDm(state, bot);
+    // 在群里建成员时不要抢走焦点：前端会留在群里
+    const dmChatId = createdIntoGroup ? null : ownDm?.id || null;
     state.settings.setupDone = true;
     saveState(state);
     if (groupCreated) emit('botGroups', { botGroups: state.botGroups });

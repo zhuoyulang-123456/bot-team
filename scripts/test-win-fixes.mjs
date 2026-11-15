@@ -150,6 +150,8 @@ async function main() {
       bots: [
         { id: 'bot_a', name: 'legacy-a', backend: 'custom', model: 'm', emoji: '🙂', color: '#111', skills: [] },
         { id: 'bot_b', name: 'legacy-b', backend: 'custom', model: 'm', emoji: '🙂', color: '#222', skills: [] },
+        // bot_c 完全没有私聊（旧版领导 @@CREATE BOT 建的成员就是这样）
+        { id: 'bot_c', name: 'legacy-c', backend: 'custom', model: 'm', emoji: '🙂', color: '#333', skills: [] },
       ],
       botGroups: [],
       chats: [
@@ -184,7 +186,9 @@ async function main() {
       )});\n` +
         `const s = loadState();\n` +
         `const dms = s.chats.filter((c) => c.type === 'dm').map((c) => ({ id: c.id, botIds: c.botIds }));\n` +
-        `console.log(JSON.stringify(dms));\n`
+        `const bots = (s.bots || []).map((b) => b.id);\n` +
+        `const missing = bots.filter((id) => !dms.some((x) => x.botIds.length === 1 && x.botIds[0] === id));\n` +
+        `console.log(JSON.stringify({ dms, missing }));\n`
     );
     const r = spawnSync(process.execPath, [probePath], {
       env: { ...process.env, BOT_TEAM_HOME: legacyHome },
@@ -192,17 +196,23 @@ async function main() {
       windowsHide: true,
       timeout: 60000,
     });
-    const dms = (() => {
+    const parsed = (() => {
       try {
-        return JSON.parse(String(r.stdout || '').trim().split(/\r?\n/).pop() || '[]');
+        return JSON.parse(String(r.stdout || '').trim().split(/\r?\n/).pop() || '{}');
       } catch {
-        return [];
+        return { dms: [], missing: ['parse-failed'] };
       }
     })();
+    const dms = parsed.dms || [];
     check(
       '旧脏数据：多 Bot 私聊被拆成各自独立私聊',
-      dms.length === 2 && dms.every((d) => d.botIds.length === 1),
+      dms.length >= 3 && dms.every((d) => d.botIds.length === 1),
       JSON.stringify(dms)
+    );
+    check(
+      '每个 Bot 都补齐了自己的私聊（含领导建的成员）',
+      (parsed.missing || []).length === 0,
+      JSON.stringify(parsed.missing || [])
     );
     fs.rmSync(legacyHome, { recursive: true, force: true });
   }

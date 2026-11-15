@@ -2026,20 +2026,32 @@ async function openBot(botId) {
       chats = listFor();
     } catch {}
   }
-  // 优先回到这个 Bot 自己的私聊：lastChatId 只要不是自己的会话就忽略（旧数据可能指到别人的私聊）
-  const isOwn = (c) => (c.botIds || [])[0] === botId || (c.botIds || []).length === 1;
+  // 只认「只属于这个 Bot」的私聊：旧数据里被塞进别人私聊的会话不算，
+  // 否则点新成员会跳到领导（或别的 Bot）的对话框。
+  const isOwn = (c) => (c.botIds || []).length === 1 && c.botIds[0] === botId;
   let chat =
-    chats.find((c) => c.id === bot?.lastChatId && isOwn(c)) ||
-    chats.find((c) => (c.botIds || []).length === 1 && c.botIds[0] === botId) ||
-    chats.find(isOwn) ||
-    chats[0];
+    chats.find((c) => c.id === bot?.lastChatId && isOwn(c)) || chats.find(isOwn) || null;
+  // 没有任何自己的私聊：立刻补建一个，绝不退回别人的会话
   if (!chat) {
-    chat = await api('/api/chats', {
-      method: 'POST',
-      body: { type: 'dm', title: botById(botId)?.name || '私聊', botIds: [botId], project: '默认项目' },
-    });
-    S.chats = S.chats.filter((c) => c.id !== chat.id);
-    S.chats.push(chat);
+    try {
+      chat = await api('/api/chats', {
+        method: 'POST',
+        body: {
+          type: 'dm',
+          title: botById(botId)?.name || '私聊',
+          botIds: [botId],
+          project: '默认项目',
+        },
+      });
+      S.chats = S.chats.filter((c) => c.id !== chat.id);
+      S.chats.push(chat);
+    } catch {
+      chat = null;
+    }
+  }
+  if (!chat) {
+    toast('这个 Bot 还没有可用的私聊，先刷新一下页面再点一次', 'err');
+    return;
   }
   openChat(chat.id);
 }
