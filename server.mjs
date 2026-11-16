@@ -17,6 +17,7 @@ import {
   emptyUsage,
   quotaLabel,
   SOURCES,
+  dynamicSources,
   DATA_DIR,
   BOTS_DIR,
   GROUPS_DIR,
@@ -3172,7 +3173,7 @@ function snapshot() {
     agyProfiles: agyProfilesPayload(),
     runtime: [...runtime.values()],
     admin: { cli: ADMIN_CLI_PATH, manual: ADMIN_MANUAL_PATH },
-    sources: SOURCES,
+    sources: dynamicSources(modelCache.opencode),
     avatars: [...uploadedAvatars(), ...AVATARS],
     wallpapers: uploadedWallpapers(),
   };
@@ -4504,7 +4505,7 @@ const server = http.createServer(async (req, res) => {
 
   if (p === '/api/models' && req.method === 'GET') {
     const models = await refreshModels();
-    return json(res, 200, models);
+    return json(res, 200, { ...models, sources: dynamicSources(models.opencode) });
   }
 
   if (p === '/api/skills' && req.method === 'GET') {

@@ -2705,7 +2705,15 @@ const API_PRESETS = [
 ];
 
 function sourceMeta(name) {
-  return (S.sources || []).find((s) => s.name === String(name || '').trim()) || null;
+  const key = String(name || '').trim();
+  const hit = (S.sources || []).find((s) => s.name === key);
+  if (hit) return hit;
+  const ocMatch = key.match(/^OpenCode\s*·\s*(.+)$/);
+  if (ocMatch) {
+    const p = ocMatch[1].trim();
+    return { name: key, billing: 'payg', backend: 'opencode', prefixes: [p] };
+  }
+  return null;
 }
 
 function modelProvider(model) {
@@ -2805,7 +2813,7 @@ function sourceForModel(backend, model) {
   return (
     (S.sources || []).find(
       (s) => s.backend === 'opencode' && (s.prefixes || []).includes(p)
-    ) || null
+    ) || { name: `OpenCode · ${p}`, billing: /-free$/.test(model) ? 'free' : 'payg', backend: 'opencode', prefixes: [p] }
   );
 }
 
@@ -5656,8 +5664,27 @@ function wireBotForm() {
     }
     backendHint.textContent = `未检测到 ${info.cmd || info.name}。先安装：${info.install}；或者改用「自定义 API」。`;
   };
+  const renderSourceOptions = () => {
+    const dl = $('#sourceList');
+    if (!dl) return;
+    const be = backend.value;
+    const list = (S.sources || []).filter((s) => s.backend === be);
+    if (be === 'opencode') {
+      const covered = new Set(list.flatMap((s) => s.prefixes || []));
+      const extra = [...new Set((S.models.opencode || []).map((m) => modelProvider(m)).filter(Boolean))].filter(
+        (p) => !covered.has(p)
+      );
+      for (const p of extra) {
+        list.push({ name: `OpenCode · ${p}`, billing: 'payg', backend: 'opencode', prefixes: [p] });
+      }
+    }
+    dl.innerHTML = list.map((s) => `<option value="${esc(s.name)}"></option>`).join('');
+  };
+  renderSourceOptions();
+
   backend.onchange = () => {
     model.value = '';
+    renderSourceOptions();
     const meta = sourceMeta(src.value);
     if (!meta || meta.backend !== backend.value) {
       src.value = DEFAULT_SOURCE_BY_BACKEND[backend.value] || src.value;
@@ -5676,12 +5703,9 @@ function wireBotForm() {
 
   src.onchange = () => {
     const meta = sourceMeta(src.value);
-    if (meta) {
-      if (meta.backend && meta.backend !== backend.value) {
-        backend.value = meta.backend;
-        model.value = '';
-      }
-      if (meta.billing) billing.value = meta.billing;
+    // 切换额度来源不再反向篡改用户已选的模型后端（例如在 OpenCode 下选 Mistral 不会跳去 Mistral Vibe）
+    if (meta && meta.backend === backend.value && meta.billing) {
+      billing.value = meta.billing;
     }
     const cur = model.value.trim();
     if (cur && !sourceCoversModel(src.value, backend.value, cur)) model.value = '';
@@ -16347,6 +16371,7 @@ async function boot() {
   // 模型列表不阻塞首屏
   api('/api/models')
     .then((models) => {
+      if (models?.sources) S.sources = models.sources;
       S.models = models;
       renderSidebar();
       if (S.activeChatId) renderModelPill();
