@@ -2750,8 +2750,13 @@ function modelsFor(backend, sourceName, agyProfileId = '') {
       'haiku',
     ];
   const meta = sourceMeta(sourceName);
-  if (!meta || !(meta.prefixes || []).length) return all;
-  return all.filter((m) => meta.prefixes.includes(modelProvider(m)));
+  if (!meta) return all;
+  let filtered = (meta.prefixes || []).length
+    ? all.filter((m) => meta.prefixes.includes(modelProvider(m)))
+    : all;
+  if (meta.freeOnly) filtered = filtered.filter((m) => /-free$/.test(m));
+  if (meta.paidOnly) filtered = filtered.filter((m) => !/-free$/.test(m));
+  return filtered;
 }
 
 async function loadAgyProfileModels(profileId, { switchModel = true, notify = false } = {}) {
@@ -2791,6 +2796,8 @@ function sourceCoversModel(sourceName, backend, model) {
   if (!meta) return true; // 自定义来源
   if (meta.backend !== backend) return false;
   if (!model) return true;
+  if (meta.freeOnly && !/-free$/.test(model)) return false;
+  if (meta.paidOnly && /-free$/.test(model)) return false;
   if (!(meta.prefixes || []).length) return true;
   return meta.prefixes.includes(modelProvider(model));
 }
@@ -5669,15 +5676,6 @@ function wireBotForm() {
     if (!dl) return;
     const be = backend.value;
     const list = (S.sources || []).filter((s) => s.backend === be);
-    if (be === 'opencode') {
-      const covered = new Set(list.flatMap((s) => s.prefixes || []));
-      const extra = [...new Set((S.models.opencode || []).map((m) => modelProvider(m)).filter(Boolean))].filter(
-        (p) => !covered.has(p)
-      );
-      for (const p of extra) {
-        list.push({ name: `OpenCode · ${p}`, billing: 'payg', backend: 'opencode', prefixes: [p] });
-      }
-    }
     dl.innerHTML = list.map((s) => `<option value="${esc(s.name)}"></option>`).join('');
   };
   renderSourceOptions();
