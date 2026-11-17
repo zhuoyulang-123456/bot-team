@@ -20,7 +20,7 @@ const S = {
   messages: {},
   thinkState: {},
   usageDays: 30,
-  usageSub: false,
+  usageSub: true,
   usageDim: 'bot',
   usageBalanceTab: 'api',
   lastUsageSummary: null,
@@ -8852,9 +8852,9 @@ function openUsageDashboard() {
   S.usageDays = [7, 30, 90].includes(Number(S.usageDays)) ? Number(S.usageDays) : 30;
   S.usageDay = '';
   try {
-    S.usageSub = localStorage.getItem('bt.usage.sub') === '1';
+    S.usageSub = localStorage.getItem('bt.usage.sub') !== '0';
   } catch {
-    S.usageSub = false;
+    S.usageSub = true;
   }
   try {
     const dim = localStorage.getItem('bt.usage.dim');
@@ -9490,7 +9490,7 @@ function usageDashboardHtml(s, providers = []) {
           )
         : ''
     }
-    ${usageKpi('合计估算', usageMoney(t.cost), 'API + 当前订阅折算')}
+    ${usageKpi('合计估算', usageMoney(t.cost), '按量实付 + 订阅折算')}
   </div>
   <div class="usage-panel usage-chart-panel">
     <div class="usage-panel-head"><b>每日 Token 消耗</b><span>${
@@ -10851,12 +10851,41 @@ function bind() {
           </div>
         </div>
         <div class="field" style="margin-top:8px">
-          <label>WorkBuddy 多少 tokens 记 1 积分</label>
+          <label>WorkBuddy 多少 tokens 记 1 积分（留 0 = 不用估算）</label>
           <input id="creditTokensCodebuddy" type="number" min="0" step="1" value="${esc(
-            String(S.settings?.creditPlans?.codebuddy?.tokensPerCredit ?? 31874)
+            String(S.settings?.creditPlans?.codebuddy?.tokensPerCredit ?? 0)
           )}" />
         </div>
-        <div class="field-hint">Qoder 直接读取 CLI 返回的真实积分；WorkBuddy 的 CLI 不返回积分，按 token 估算。默认 ¥0.072/积分、31,874 tokens/积分，可改成你的真实套餐。</div>
+        <div class="field-hint">Qoder 直接读取 CLI 返回的真实积分；WorkBuddy 新版本 CLI 也会返回本轮真实积分，只有老版本不返回时才需要填这个换算比例（留 0 表示不按积分估算，直接按 token 单价算）。</div>
+      </div>
+      <div class="field">
+        <label>自定义 API 单价（元 / 百万 tokens）</label>
+        <div class="field-hint">「自定义 API」后端拿不到官方价目表，不填就会按通用国产模型价估算，和真实账单可能差很多。按模型名（如 deepseek-chat）填官方价即可，留空表示该模型不覆盖。</div>
+        <div id="modelPriceRows">
+          ${(S.settings?.modelPrices && Object.keys(S.settings.modelPrices).length
+            ? Object.entries(S.settings.modelPrices)
+            : [['', {}]]
+          )
+            .map(
+              ([name, p]) => `<div class="field row-2 even model-price-row" style="margin-top:8px">
+            <input class="mp-name" placeholder="模型名，如 deepseek-chat" value="${esc(name)}" />
+            <input class="mp-in" type="number" min="0" step="0.01" placeholder="输入单价" value="${
+              p?.in ?? ''
+            }" />
+            <input class="mp-out" type="number" min="0" step="0.01" placeholder="输出单价" value="${
+              p?.out ?? ''
+            }" />
+            <input class="mp-cache" type="number" min="0" step="0.01" placeholder="缓存命中单价" value="${
+              p?.cache ?? ''
+            }" />
+          </div>`
+            )
+            .join('')}
+        </div>
+        <div class="wallpaper-actions">
+          <button type="button" class="btn ghost" id="modelPriceAdd">添加一行</button>
+          <button type="button" class="btn" id="modelPriceSave">保存单价</button>
+        </div>
       </div>
       <div class="field">
         <label class="check-line"><input type="checkbox" id="fastModeOn" ${
@@ -11180,6 +11209,58 @@ function bind() {
         }
       };
       for (const input of creditInputs) input.addEventListener('change', saveCreditPlans);
+    }
+    const priceSave = $('#modelPriceSave');
+    if (priceSave) {
+      const collectPrices = () => {
+        const out = {};
+        for (const row of document.querySelectorAll('.model-price-row')) {
+          const name = String(row.querySelector('.mp-name')?.value || '').trim();
+          if (!name) continue;
+          const pick = (sel) => {
+            const raw = String(row.querySelector(sel)?.value ?? '').trim();
+            return raw === '' ? undefined : Number(raw);
+          };
+          const entry = {};
+          for (const [field, sel] of [
+            ['in', '.mp-in'],
+            ['out', '.mp-out'],
+            ['cache', '.mp-cache'],
+          ]) {
+            const v = pick(sel);
+            if (Number.isFinite(v) && v >= 0) entry[field] = v;
+          }
+          if (Object.keys(entry).length) out[name] = entry;
+        }
+        return out;
+      };
+      const addRow = () => {
+        const box = $('#modelPriceRows');
+        if (!box) return;
+        const row = document.createElement('div');
+        row.className = 'field row-2 even model-price-row';
+        row.style.marginTop = '8px';
+        row.innerHTML =
+          '<input class="mp-name" placeholder="模型名，如 deepseek-chat" />' +
+          '<input class="mp-in" type="number" min="0" step="0.01" placeholder="输入单价" />' +
+          '<input class="mp-out" type="number" min="0" step="0.01" placeholder="输出单价" />' +
+          '<input class="mp-cache" type="number" min="0" step="0.01" placeholder="缓存命中单价" />';
+        box.appendChild(row);
+      };
+      const addBtn = $('#modelPriceAdd');
+      if (addBtn) addBtn.onclick = addRow;
+      priceSave.onclick = async () => {
+        try {
+          const res = await api('/api/settings', {
+            method: 'PATCH',
+            body: { modelPrices: collectPrices() },
+          });
+          S.settings = res.settings;
+          toast('模型单价已保存，用量中心会按新单价重新估算');
+        } catch (e) {
+          toast(`保存失败：${e.message}`, 'err');
+        }
+      };
     }
     wireEngineConfig('tr');
     wireEngineConfig('ex');

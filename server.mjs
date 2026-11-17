@@ -53,7 +53,7 @@ import {
   recordUsage,
 } from './lib/usage.mjs';
 import { syncMimoLogin, fetchMimoBalance } from './lib/mimo-sync.mjs';
-import { initPricing, pricingMeta, creditsForRun, creditMoney } from './lib/pricing.mjs';
+import { initPricing, pricingMeta, creditsForRun, creditMoney, setCustomPrices } from './lib/pricing.mjs';
 import { browserDiagnostics } from './lib/browser-cookies.mjs';
 import { setupProxy } from './lib/net.mjs';
 import { buildWorkflowHtml } from './lib/wf-export.mjs';
@@ -4530,7 +4530,7 @@ const server = http.createServer(async (req, res) => {
     const data = summarizeUsage(state, {
       days: Number(q.get('days') || 30),
       day: q.get('day') || '',
-      includeSubscription: q.get('includeSubscription') === '1',
+      includeSubscription: q.get('includeSubscription') !== '0',
     });
     return json(res, 200, data);
   }
@@ -4627,7 +4627,7 @@ const server = http.createServer(async (req, res) => {
         day: q.get('day') || '',
         dim,
         key: q.get('key') || '',
-        includeSubscription: q.get('includeSubscription') === '1',
+        includeSubscription: q.get('includeSubscription') !== '0',
       })
     );
   }
@@ -5718,7 +5718,24 @@ const server = http.createServer(async (req, res) => {
           plans[key].tokensPerCredit = tokens;
         }
       }
-      state.settings.creditPlans = plans;
+      // 只改传进来的渠道，别把另一个渠道的用户配置清掉
+      state.settings.creditPlans = { ...(state.settings.creditPlans || {}), ...plans };
+    }
+    if (body.modelPrices && typeof body.modelPrices === 'object') {
+      // 自定义 API 的单价（元 / 百万 tokens）：只接受合法的非负数字，键是模型名
+      const prices = {};
+      for (const [rawKey, raw] of Object.entries(body.modelPrices).slice(0, 200)) {
+        const key = String(rawKey || '').trim().slice(0, 120);
+        if (!key || !raw || typeof raw !== 'object') continue;
+        const row = {};
+        for (const f of ['in', 'out', 'cache', 'cacheW']) {
+          const n = Number(raw[f]);
+          if (Number.isFinite(n) && n >= 0 && n <= 1e6) row[f] = n;
+        }
+        if (Object.keys(row).length) prices[key] = row;
+      }
+      state.settings.modelPrices = prices;
+      setCustomPrices(prices);
     }
     if (body.sound !== undefined) {
       state.settings.sound = ['reply', 'soft', 'chime'].includes(body.sound) ? body.sound : 'reply';
@@ -7231,6 +7248,10 @@ export function stopServer() {
 }
 
 initPricing().catch(() => {});
+// 自定义 API 的单价在启动时就生效，否则重启后要等用户再保存一次设置
+try {
+  setCustomPrices(state.settings?.modelPrices || {});
+} catch {}
 
 const isEntry = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
