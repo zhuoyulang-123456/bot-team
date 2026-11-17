@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
   version: process.versions.electron,
   openDataDir: () => ipcRenderer.invoke('open-data-dir'),
+  relaunch: () => ipcRenderer.invoke('app-relaunch'),
   mimoLogin: () => ipcRenderer.invoke('mimo-login'),
   getLoginItem: () => ipcRenderer.invoke('login-item-get'),
   setLoginItem: (enabled) => ipcRenderer.invoke('login-item-set', enabled),

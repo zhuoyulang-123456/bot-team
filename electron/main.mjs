@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { killActiveChildren } from '../lib/agents.mjs';
+import { fallbackBinDirs } from '../lib/platform.mjs';
 
 const APP_NAME = 'Bot Team';
 
@@ -18,44 +19,15 @@ app.setAboutPanelOptions({
    否则 opencode / codex / agy 全都找不到。 */
 function fixPath() {
   const home = os.homedir();
+  // 统一用 lib/platform.mjs 的目录表，避免 Windows/macOS 两处清单各写一半、互相漏配
+  const extra = fallbackBinDirs();
   if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
-    const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
-    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-    const extra = [
-      path.join(appData, 'npm'),
-      path.join(localAppData, 'Programs'),
-      path.join(localAppData, 'Microsoft', 'WinGet', 'Packages'),
-      path.join(localAppData, 'Volta', 'bin'),
-      path.join(home, '.volta', 'bin'),
-      path.join(home, '.bun', 'bin'),
-      path.join(home, '.opencode', 'bin'),
-      path.join(home, '.local', 'bin'),
-      path.join(programFiles, 'nodejs'),
-      path.join(programFiles, 'Git', 'cmd'),
-      'C:\\ffmpeg\\bin',
-    ];
     const parts = new Set(
       [process.env.PATH, ...extra].filter(Boolean).join(path.delimiter).split(path.delimiter).filter(Boolean)
     );
     process.env.PATH = [...parts].join(path.delimiter);
     return;
   }
-
-  const extra = [
-    path.join(home, '.local/lib/node/bin'),
-    path.join(home, '.local/bin'),
-    path.join(home, '.bun/bin'),
-    path.join(home, '.opencode/bin'),
-    path.join(home, '.npm-global/bin'),
-    path.join(home, '.volta/bin'),
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-  ];
-  try {
-    const nvm = path.join(home, '.nvm/versions/node');
-    for (const v of fs.readdirSync(nvm)) extra.push(path.join(nvm, v, 'bin'));
-  } catch {}
 
   let loginPath = '';
   try {
@@ -89,10 +61,10 @@ async function bootServer() {
   process.env.BOT_TEAM_HOME = home;
   process.env.NODE_ENV = process.env.NODE_ENV || 'production';
 
-  // 必须在设置 BOT_TEAM_HOME 之后再加载，store.mjs 会读它决定数据目录。
+  // 不显式传 host：由 startServer 按「设置里的局域网访问开关 / BOT_TEAM_HOST」决定，
+  // 桌面端默认仍是 127.0.0.1，打开开关后才会绑定 0.0.0.0。
   const { startServer } = await import('../server.mjs');
-  const host = process.env.BOT_TEAM_HOST || '127.0.0.1';
-  const { port } = await startServer({ port: 0, host });
+  const { port } = await startServer({ port: 0, desktop: true });
   serverUrl = `http://127.0.0.1:${port}`;
 }
 
@@ -222,6 +194,16 @@ if (!gotLock) {
   });
 
   ipcMain.handle('open-data-dir', () => shell.openPath(app.getPath('userData')));
+
+  // 局域网访问等需要重新绑定端口的设置，改完用这个立即重启应用
+  ipcMain.handle('app-relaunch', () => {
+    try {
+      killActiveChildren();
+    } catch {}
+    app.relaunch();
+    app.exit(0);
+    return true;
+  });
 
   ipcMain.handle('pick-files', async () => {
     try {

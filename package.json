@@ -1,7 +1,7 @@
 {
   "name": "bot-team",
   "productName": "Bot Team",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "description": "Local multi-bot workspace: many bots, each with its own model backend (opencode / codex / antigravity), independent memory, and bot-to-bot handoff.",
@@ -95,7 +95,8 @@
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "include": "build/installer.nsh"
     },
     "portable": {
       "artifactName": "Bot-Team-${version}-${arch}-portable.${ext}"

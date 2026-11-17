@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.9 — 2026-11-17
+
+Windows 端补齐原本只在 macOS 上可用的能力，桌面端行为不变（默认仍只监听 127.0.0.1）。
+
+### Windows 原生能力
+
+- OpenCode 历史用量同步在 Windows 可用：改用 Node 内置 `node:sqlite`（无需外部 `sqlite3`），并兼容 OpenCode 2.x 的 `session_v2` / `session_message` 新表结构，旧版 `message` 表继续支持
+- Antigravity 实时配额与账号识别在 Windows 可用：读取 `%APPDATA%\Antigravity\app_storage.json` 与本地 hub（`~/.gemini/antigravity/daemon`），额度卡片与 macOS 一致
+- `agy` 多账号登录在 Windows 可用：用独立控制台窗口运行登录，同时切换 `HOME` 与 `USERPROFILE`，多账号 Bot 各自的 `.gemini` 互不干扰
+- 文件预览在 Windows 可用：调用 Windows Shell 缩略图接口生成 PNG（图片 / PDF / Office），失败时对图片走 GDI+ 缩放兜底，不再提示「只支持 macOS」
+- `.doc` / `.rtf` / `.odt` 文本提取在 Windows 可用：优先 Word COM，其次 LibreOffice headless，均不可用时给出明确提示
+- 文档编辑器「保存为 .docx」在 Windows 可用（Word COM，缺失时回退 LibreOffice），临时文件改为目标目录内的单扩展名文件，避免 Word 静默不落盘
+- 内置 PowerShell 辅助脚本统一以带 BOM 的 UTF-8 写出，避免 Windows PowerShell 5.1 按本地代码页解析导致脚本被破坏
+- 「一键打开 Antigravity / WorkBuddy / Qoder」在 Windows 可用（按常见安装目录定位 exe），系统设置跳转映射到 `ms-settings:`
+- 桌面端 PATH 补齐统一走 `lib/platform.mjs` 的目录表，Windows 漏配的 `agy`、`.kimi-code`、`.qoder-cn` 等目录一并补上
+
+### 设置与安全
+
+- 设置页新增「允许局域网访问」开关：默认只监听 `127.0.0.1`；开启并重启后绑定 `0.0.0.0`，手机可用局域网地址访问（远程请求仍需访问令牌）
+- 未开启局域网访问时，设置页明确提示局域网地址当前不可用，避免给出打不开的链接
+- 桌面端新增「重启 Bot Team」入口，用于让端口绑定等设置立即生效
+- NSIS 安装包在覆盖升级前自动关闭正在运行的旧版 `Bot Team.exe`，避免文件占用导致安装失败
+
+### 体验
+
+- Windows 文案不再出现「访达」「完全磁盘访问权限」等 macOS 专有说法，改为「资源管理器」等对应表述
+- Windows 上隐藏不可用的「从浏览器读取 MiMo 登录态」入口，引导使用 App 内登录或手动填写 Cookie
+
 ## 0.1.3 — 2026-11-16
 
 依赖安全升级，无功能变更。

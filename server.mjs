@@ -299,6 +299,11 @@ function lanUrls() {
 function remoteStatus() {
   const token = remoteToken();
   const port = serverPort;
+  let bound = '';
+  try {
+    const addr = server.address();
+    bound = typeof addr === 'object' && addr ? addr.address : '';
+  } catch {}
   const tailscaleUrls = tailscaleIp
     ? [`http://${tailscaleIp}:${port}/m?token=${encodeURIComponent(token)}`]
     : [];
@@ -312,6 +317,8 @@ function remoteStatus() {
     port,
     token,
     auto: !!state.settings.remoteAuto,
+    lanAccess: !!state.settings?.lanAccess,
+    lanBound: !!bound && bound !== '127.0.0.1' && bound !== '::1',
     tailscaleInstalled: !!tailscaleBin(),
     tailscaleIp,
     tailscaleUrls,
@@ -2570,7 +2577,10 @@ async function fetchAgyModels(profile) {
     execFile(
       resolveCmd('agy') || 'agy',
       ['models'],
-      { timeout: 30000, env: { ...childEnv(), HOME: home } },
+      {
+        timeout: 30000,
+        env: { ...childEnv(), HOME: home, ...(isWin ? { USERPROFILE: home } : {}) },
+      },
       (err, stdout) => resolve(err ? '' : String(stdout || ''))
     );
   });
@@ -3937,6 +3947,163 @@ print(text[:limit])
   return { text: text.slice(0, max), truncated: text.length >= max, pages, kind: 'pdf' };
 }
 
+/* Windows 没有 textutil：用 Word COM（或 LibreOffice）把 .doc/.rtf 转成纯文本。 */
+const DOC2TXT_PS1 = path.join(DATA_DIR, 'thumb-cache', 'doc2txt.ps1');
+// 注意：PowerShell 5.1 读无 BOM 的 UTF-8 脚本会按 GBK 解析，中文注释可能吞掉换行，
+// 所以这里的脚本内容一律只用 ASCII 注释。
+const DOC2TXT_PS1_SOURCE = String.raw`param([string]$In, [string]$Out)
+$ErrorActionPreference = 'Stop'
+$app = New-Object -ComObject Word.Application
+$app.Visible = $false
+$app.DisplayAlerts = 0
+try {
+  $doc = $app.Documents.Open($In, $false, $true, $false)
+  $text = $doc.Content.Text
+  [IO.File]::WriteAllText($Out, [string]$text, (New-Object System.Text.UTF8Encoding($false)))
+  $doc.Close($false)
+} finally {
+  try { $app.Quit() } catch {}
+  try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch {}
+}
+`;
+
+async function extractWordText(file) {
+  ensureLocalScript(DOC2TXT_PS1, DOC2TXT_PS1_SOURCE);
+  const outFile = path.join(os.tmpdir(), `bt-doc-${crypto.randomBytes(6).toString('hex')}.txt`);
+  try {
+    const r = await execFileP(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        DOC2TXT_PS1,
+        '-In',
+        String(file).replace(/\//g, '\\'),
+        '-Out',
+        outFile,
+      ],
+      { timeout: 30000 }
+    );
+    if (r.ok && fs.existsSync(outFile)) {
+      const text = fs.readFileSync(outFile, 'utf8');
+      if (text.trim()) return text;
+    }
+  } catch {
+  } finally {
+    try {
+      fs.rmSync(outFile, { force: true });
+    } catch {}
+  }
+  // 兜底：装了 LibreOffice 就用 headless 转换
+  const soffice =
+    which('soffice') ||
+    (isWin ? 'C:\\Program Files\\LibreOffice\\program\\soffice.exe' : '/Applications/LibreOffice.app/Contents/MacOS/soffice');
+  try {
+    if (fs.existsSync(soffice) || !soffice.includes(':\\')) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bt-soffice-'));
+      const r = await execFileP(soffice, ['--headless', '--convert-to', 'txt:Text', '--outdir', dir, file], {
+        timeout: 60000,
+      });
+      if (r.ok) {
+        const txt = fs.readdirSync(dir).find((f) => f.toLowerCase().endsWith('.txt'));
+        if (txt) return fs.readFileSync(path.join(dir, txt), 'utf8');
+      }
+    }
+  } catch {}
+  throw new Error('无法提取该文档文本（可安装 Microsoft Word 或 LibreOffice 后重试，或先另存为 .docx）');
+}
+
+/* Windows 没有 textutil：用 Word COM（或 LibreOffice）把编辑器里的 HTML 另存为 .docx。 */
+const HTML2DOCX_PS1 = path.join(DATA_DIR, 'thumb-cache', 'html2docx.ps1');
+const HTML2DOCX_PS1_SOURCE = String.raw`param([string]$In, [string]$Out)
+$ErrorActionPreference = 'Stop'
+$app = New-Object -ComObject Word.Application
+$app.Visible = $false
+$app.DisplayAlerts = 0
+try {
+  # Insert the HTML into a blank document, then save as docx.
+  # SaveAs2 on an opened HTML document can silently write nothing.
+  $doc = $app.Documents.Add()
+  $doc.Content.InsertFile($In)
+  # 16 = wdFormatDocumentDefault (docx)
+  $doc.SaveAs2($Out, 16)
+  $doc.Close($false)
+} finally {
+  try { $app.Quit() } catch {}
+  try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch {}
+}
+`;
+
+function ensureLocalScript(file, source) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // 带 BOM 写出：Windows PowerShell 5.1 读无 BOM 的 UTF-8 脚本会按本地代码页解析，
+    // 中文注释里的字节可能被当成引号/换行，导致脚本语法被破坏。
+    const body = source.startsWith('\uFEFF') ? source : `\uFEFF${source}`;
+    const size = Buffer.byteLength(body);
+    let current = -1;
+    try {
+      current = fs.statSync(file).size;
+    } catch {}
+    if (current !== size) fs.writeFileSync(file, body, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function htmlToDocxWindows(htmlFile, outFile) {
+  if (ensureLocalScript(HTML2DOCX_PS1, HTML2DOCX_PS1_SOURCE)) {
+    const r = await execFileP(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        HTML2DOCX_PS1,
+        '-In',
+        String(htmlFile).replace(/\//g, '\\'),
+        '-Out',
+        String(outFile).replace(/\//g, '\\'),
+      ],
+      { timeout: 60000 }
+    );
+    if (r.ok && fs.existsSync(outFile)) return;
+  }
+  // 兜底：装了 LibreOffice 就用 headless 转换
+  const soffice =
+    which('soffice') ||
+    (isWin ? 'C:\\Program Files\\LibreOffice\\program\\soffice.exe' : '/Applications/LibreOffice.app/Contents/MacOS/soffice');
+  const exists = (() => {
+    try {
+      return fs.statSync(soffice).isFile();
+    } catch {
+      return false;
+    }
+  })();
+  if (!exists) {
+    throw new Error('无法保存 .docx（需要 Microsoft Word 或 LibreOffice）');
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bt-docx-'));
+  try {
+    const r = await execFileP(soffice, ['--headless', '--convert-to', 'docx:MS Word 2007 XML', '--outdir', dir, htmlFile], {
+      timeout: 120000,
+    });
+    const produced = fs.readdirSync(dir).find((f) => f.toLowerCase().endsWith('.docx'));
+    if (!r.ok || !produced) throw new Error(r.err || 'LibreOffice 转换失败');
+    fs.copyFileSync(path.join(dir, produced), outFile);
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
 async function extractFileText(file, max) {
   let st;
   try {
@@ -3961,6 +4128,8 @@ async function extractFileText(file, max) {
       });
       if (!r.ok && !r.out) throw new Error('这个文档暂时无法提取文字');
       text = r.out || '';
+    } else if (ext === 'doc' || ext === 'rtf' || ext === 'rtfd' || ext === 'odt') {
+      text = await extractWordText(file);
     } else if (ext === 'docx') {
       try {
         const mammoth = await import('mammoth');
@@ -3969,10 +4138,8 @@ async function extractFileText(file, max) {
       } catch {
         throw new Error('无法提取 .docx 文本（请直接在文件查看器中打开）');
       }
-    } else if (ext === 'html' || ext === 'htm') {
-      text = readTextFileLimited(file, max).text;
     } else {
-      throw new Error(`Windows 暂不支持提取 .${ext} 文本${ext === 'doc' ? '（旧版 .doc 请另存为 .docx 或安装 LibreOffice）' : ''}`);
+      text = readTextFileLimited(file, max).text;
     }
     result = { text: text.slice(0, max), truncated: text.length > max, pages: 0, kind: ext };
   } else if (isTextExt(file)) {
@@ -3988,8 +4155,124 @@ async function extractFileText(file, max) {
   return result;
 }
 
+/* Windows 没有 qlmanage，用 PowerShell 调系统 Shell 缩略图接口生成 PNG。 */
+const THUMB_CACHE_DIR = path.join(DATA_DIR, 'thumb-cache');
+const THUMB_PS1 = path.join(THUMB_CACHE_DIR, 'thumb.ps1');
+const THUMB_PS1_SOURCE = String.raw`param([string]$In, [string]$Out, [int]$Size = 1600)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+
+public static class BTThumb {
+  [StructLayout(LayoutKind.Sequential)]
+  private struct SIZE { public int cx; public int cy; public SIZE(int w, int h) { cx = w; cy = h; } }
+
+  [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  private interface IShellItemImageFactory {
+    [PreserveSig] int GetImage(SIZE size, int flags, out IntPtr phbm);
+  }
+
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+  private static extern void SHCreateItemFromParsingName(string pszPath, IntPtr pbc, ref Guid riid,
+    [MarshalAs(UnmanagedType.Interface)] out IShellItemImageFactory ppv);
+
+  [DllImport("gdi32.dll")]
+  private static extern bool DeleteObject(IntPtr hObject);
+
+  public static bool Save(string path, int size, string outPath) {
+    Guid iid = new Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b");
+    IShellItemImageFactory factory;
+    SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out factory);
+    IntPtr hbm;
+    int hr = factory.GetImage(new SIZE(size, size), 0x1, out hbm);
+    if (hr != 0 || hbm == IntPtr.Zero) return false;
+    try {
+      using (Bitmap bmp = Image.FromHbitmap(hbm)) {
+        bmp.Save(outPath, ImageFormat.Png);
+      }
+      return true;
+    } finally { DeleteObject(hbm); }
+  }
+}
+'@ -ReferencedAssemblies System.Drawing
+
+function Test-BlankImage([string]$File) {
+  $img = [System.Drawing.Image]::FromFile($File)
+  $bmp = New-Object System.Drawing.Bitmap($img)
+  try {
+    $min = 255
+    $max = 0
+    $stepX = [Math]::Max(1, [int]($bmp.Width / 40))
+    $stepY = [Math]::Max(1, [int]($bmp.Height / 40))
+    for ($x = 0; $x -lt $bmp.Width; $x += $stepX) {
+      for ($y = 0; $y -lt $bmp.Height; $y += $stepY) {
+        $p = $bmp.GetPixel($x, $y)
+        if ($p.A -le 8) { continue }
+        $v = [int](($p.R + $p.G + $p.B) / 3)
+        if ($v -lt $min) { $min = $v }
+        if ($v -gt $max) { $max = $v }
+      }
+    }
+    if ($max -eq 0 -and $min -eq 255) { return $true }
+    return (($max - $min) -lt 12)
+  } finally {
+    $bmp.Dispose()
+    $img.Dispose()
+  }
+}
+
+$ok = $false
+try { $ok = [BTThumb]::Save($In, $Size, $Out) } catch { $ok = $false }
+if ($ok) {
+  $blank = $false
+  try { $blank = Test-BlankImage $Out } catch { $blank = $false }
+  if (-not $blank) { exit 0 }
+  Remove-Item $Out -Force -ErrorAction SilentlyContinue
+}
+
+# 图片兜底：缩放后直接存 PNG
+try {
+  $img = [System.Drawing.Image]::FromFile($In)
+  if ($Size -le 0) { $Size = 1600 }
+  $scale = [Math]::Min(1.0, [Math]::Min($Size / $img.Width, $Size / $img.Height))
+  $w = [int][Math]::Max(1, [Math]::Round($img.Width * $scale))
+  $h = [int][Math]::Max(1, [Math]::Round($img.Height * $scale))
+  $bmp = New-Object System.Drawing.Bitmap($w, $h)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+  $g.DrawImage($img, 0, 0, $w, $h)
+  $g.Dispose()
+  $img.Dispose()
+  $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
+  $bmp.Dispose()
+  exit 0
+} catch {
+  exit 1
+}
+`;
+
+function ensureThumbScript() {
+  return ensureLocalScript(THUMB_PS1, THUMB_PS1_SOURCE);
+}
+
+async function makeWindowsThumb(target, outPng) {
+  if (!ensureThumbScript()) throw new Error('thumb script unavailable');
+  // Windows Shell 接口不接受正斜杠路径，且 PowerShell 会把参数里的 / 当开关
+  const inPath = String(target).replace(/\//g, '\\');
+  const r = await execFileP(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', THUMB_PS1, '-In', inPath, '-Out', outPng],
+    { timeout: 20000 }
+  );
+  if (!r.ok || !fs.existsSync(outPng)) throw new Error(r.err || 'no thumbnail');
+}
+
 async function serveThumb(req, res, url) {
-  if (process.platform !== 'darwin') return json(res, 501, { error: '缩略图只支持 macOS' });
+  if (!isWin && process.platform !== 'darwin') return json(res, 501, { error: '当前系统暂不支持缩略图' });
   const target = expandLocalPath(url.searchParams.get('path'));
   if (!target) return json(res, 400, { error: '缺少 path' });
   let st;
@@ -4009,9 +4292,13 @@ async function serveThumb(req, res, url) {
   if (!fs.existsSync(cached)) {
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bt-thumb-'));
     try {
-      await execFileP('/usr/bin/qlmanage', ['-t', '-s', '1600', '-o', outDir, target], {
-        timeout: 20000,
-      });
+      if (isWin) {
+        await makeWindowsThumb(target, path.join(outDir, 'thumb.png'));
+      } else {
+        await execFileP('/usr/bin/qlmanage', ['-t', '-s', '1600', '-o', outDir, target], {
+          timeout: 20000,
+        });
+      }
       const png = fs.readdirSync(outDir).find((f) => f.toLowerCase().endsWith('.png'));
       if (!png) return json(res, 404, { error: '这个文件无法生成预览' });
       fs.copyFileSync(path.join(outDir, png), cached);
@@ -4258,16 +4545,67 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p === '/api/open-app' && req.method === 'POST') {
-    if (isWin) return json(res, 501, { error: 'Windows 暂不支持一键打开该桌面 App，请手动打开' });
     const body = await readBody(req);
     const apps = {
-      antigravity: ['Antigravity'],
+      antigravity: ['Antigravity', 'Antigravity Tools'],
       'antigravity-tools': ['Antigravity Tools', 'Antigravity'],
       qoder: ['Qoder CN', 'Qoder'],
       workbuddy: ['WorkBuddy AI', 'WorkBuddy'],
     };
-    const names = apps[String(body.app || '')];
+    const key = String(body.app || '');
+    const names = apps[key];
     if (!names) return json(res, 400, { error: '不支持的 App' });
+    if (isWin) {
+      const localAppData =
+        process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+      const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+      const exeNames = {
+        Antigravity: [
+          path.join(localAppData, 'Programs', 'Antigravity', 'Antigravity.exe'),
+          path.join(localAppData, 'Antigravity', 'Antigravity.exe'),
+          path.join(programFiles, 'Antigravity', 'Antigravity.exe'),
+        ],
+        'Antigravity Tools': [
+          path.join(localAppData, 'Programs', 'Antigravity Tools', 'Antigravity Tools.exe'),
+          path.join(localAppData, 'Antigravity Tools', 'Antigravity Tools.exe'),
+        ],
+        'Qoder CN': [
+          path.join(localAppData, 'Programs', 'Qoder CN', 'Qoder CN.exe'),
+          path.join(localAppData, 'Programs', 'Qoder', 'Qoder.exe'),
+        ],
+        Qoder: [
+          path.join(localAppData, 'Programs', 'Qoder', 'Qoder.exe'),
+          path.join(programFiles, 'Qoder', 'Qoder.exe'),
+        ],
+        'WorkBuddy AI': [
+          path.join(localAppData, 'Programs', 'WorkBuddy AI', 'WorkBuddy AI.exe'),
+          path.join(localAppData, 'Programs', 'WorkBuddy', 'WorkBuddy.exe'),
+        ],
+        WorkBuddy: [
+          path.join(localAppData, 'Programs', 'WorkBuddy', 'WorkBuddy.exe'),
+          path.join(programFiles, 'WorkBuddy', 'WorkBuddy.exe'),
+        ],
+      };
+      for (const name of names) {
+        for (const exe of exeNames[name] || []) {
+          if (!fs.existsSync(exe)) continue;
+          const ok = await new Promise((resolve) => {
+            try {
+              const child = spawn(exe, [], { detached: true, stdio: 'ignore' });
+              child.once('spawn', () => {
+                child.unref();
+                resolve(true);
+              });
+              child.once('error', () => resolve(false));
+            } catch {
+              resolve(false);
+            }
+          });
+          if (ok) return json(res, 200, { ok: true, app: name });
+        }
+      }
+      return json(res, 404, { error: '未找到该 App，请先安装，或手动从开始菜单打开' });
+    }
     for (const name of names) {
       const ok = await new Promise((resolve) => {
         execFile('open', ['-a', name], (err) => resolve(!err));
@@ -4315,13 +4653,19 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p === '/api/open-settings' && req.method === 'POST') {
-    if (isWin) return json(res, 501, { error: 'Windows 暂不支持打开 macOS 系统设置' });
     const body = await readBody(req);
-    const urls = {
-      fda: 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
-      privacy: 'x-apple.systempreferences:com.apple.preference.security',
-    };
-    const url = urls[String(body.target || '')];
+    const target = String(body.target || '');
+    const urls = isWin
+      ? {
+          fda: 'ms-settings:privacy-broadfilesystemaccess',
+          privacy: 'ms-settings:privacy',
+          proxy: 'ms-settings:network-proxy',
+        }
+      : {
+          fda: 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
+          privacy: 'x-apple.systempreferences:com.apple.preference.security',
+        };
+    const url = urls[target];
     if (!url) return json(res, 400, { error: '不支持的设置项' });
     execFile('open', [url], () => {});
     return json(res, 200, { ok: true });
@@ -4878,7 +5222,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p === '/api/files/write-docx' && req.method === 'POST') {
-    if (!isMac) return json(res, 501, { error: '当前平台暂不支持保存 .docx（仅支持 macOS）' });
+    if (!isMac && !isWin) return json(res, 501, { error: '当前平台暂不支持保存 .docx' });
     const body = await readBody(req);
     const target = expandLocalPath(body.path);
     if (!target || !isAbsolutePath(target)) return json(res, 400, { error: '需要绝对路径' });
@@ -4893,15 +5237,22 @@ const server = http.createServer(async (req, res) => {
     const html = String(body.html || '');
     if (html.length > 12 * 1024 * 1024) return json(res, 413, { error: '内容太大（上限 12MB）' });
     const stamp = `${process.pid}-${Date.now()}`;
-    const tmpHtml = `${target}.bt-${stamp}.html`;
-    const tmpDocx = `${target}.bt-${stamp}.docx`;
+    // 临时文件必须放在目标同目录（保证 rename 原子且跨盘不失败），
+    // 且文件名只能是单一扩展名：Windows 下 Word 遇到 a.docx.bt-123.docx 这类
+    // 多重扩展名会静默不保存。
+    const tmpHtml = path.join(path.dirname(target), `.bt-${stamp}.html`);
+    const tmpDocx = path.join(path.dirname(target), `.bt-${stamp}.docx`);
     try {
       const full = /<html[\s>]/i.test(html)
         ? html
         : `<!doctype html><html><head><meta charset="utf-8"></head><body>${html}</body></html>`;
       fs.writeFileSync(tmpHtml, full, 'utf8');
-      const r = await execFileP('/usr/bin/textutil', ['-convert', 'docx', '-output', tmpDocx, tmpHtml], { timeout: 60000 });
-      if (!r.ok || !fs.existsSync(tmpDocx)) throw new Error(r.err || 'textutil 转换失败');
+      if (isMac) {
+        const r = await execFileP('/usr/bin/textutil', ['-convert', 'docx', '-output', tmpDocx, tmpHtml], { timeout: 60000 });
+        if (!r.ok || !fs.existsSync(tmpDocx)) throw new Error(r.err || 'textutil 转换失败');
+      } else {
+        await htmlToDocxWindows(tmpHtml, tmpDocx);
+      }
       try { fs.chmodSync(tmpDocx, st.mode); } catch {}
       fs.renameSync(tmpDocx, target);
       const after = fs.statSync(target);
@@ -5398,11 +5749,17 @@ const server = http.createServer(async (req, res) => {
       state.settings.proxy = String(body.proxy || '').trim().slice(0, 500);
       proxyApplied = await setupProxy(state.settings.proxy);
     }
+    let lanRestart = false;
+    if (body.lanAccess !== undefined) {
+      const next = !!body.lanAccess;
+      lanRestart = next !== !!state.settings.lanAccess;
+      state.settings.lanAccess = next;
+    }
     saveState(state);
     emit('settings', { settings: settingsPublic() });
     emit('bots', { bots: state.bots.map(publicBot) });
     emit('chats', { chats: state.chats });
-    return json(res, 200, { settings: settingsPublic(), proxy: proxyApplied });
+    return json(res, 200, { settings: settingsPublic(), proxy: proxyApplied, lanRestart });
   }
 
   if (p === '/api/chats' && req.method === 'POST') {
@@ -6158,13 +6515,44 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (agyProfileMatch && req.method === 'POST' && agyProfileMatch[2] === 'login') {
-    if (isWin) return json(res, 501, { error: 'Windows 暂不支持 Antigravity (agy) 登录' });
     if (!local) return json(res, 403, { error: 'only local' });
     const profile = agyProfileById(agyProfileMatch[1]);
     if (!profile) return json(res, 404, { error: 'profile not found' });
     agyProfileModelsCache.delete(profile.id);
     const home = agyProfileHome(profile);
     const realHome = os.homedir();
+    fs.mkdirSync(AGY_PROFILES_DIR, { recursive: true });
+    if (isWin) {
+      // Windows 没有 Terminal/keychain：写一个 .cmd 脚本放到独立控制台里跑 agy，
+      // 登录浏览器流程和 Mac 一致，只是 HOME/USERPROFILE 都要指向该 profile。
+      ensureAgyHome(home);
+      try {
+        fs.mkdirSync(path.join(home, '.gemini', 'antigravity-cli'), { recursive: true });
+      } catch {}
+      const cmdPath = path.join(AGY_PROFILES_DIR, `${profile.id}-login.cmd`);
+      const bin = resolveCmd('agy') || which('agy') || 'agy';
+      fs.writeFileSync(
+        cmdPath,
+        [
+          '@echo off',
+          'chcp 65001 >nul',
+          `set "HOME=${home}"`,
+          `set "USERPROFILE=${home}"`,
+          'cd /d "%USERPROFILE%"',
+          `"${bin}"`,
+          'echo.',
+          'pause',
+        ].join('\r\n'),
+        'utf8'
+      );
+      spawn('cmd.exe', ['/c', cmdPath], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false,
+        env: { ...childEnv(), HOME: home, USERPROFILE: home },
+      }).unref();
+      return json(res, 200, { ok: true, scriptPath: cmdPath });
+    }
     const scriptPath = path.join(AGY_PROFILES_DIR, `${profile.id}-login.command`);
     const script = `#!/bin/zsh
 REAL_HOME="${realHome.replace(/"/g, '\\"')}"
@@ -6739,7 +7127,12 @@ function startWorkflowWatchdog() {
   watchdogTimer.unref?.();
 }
 
-export async function startServer({ port = PORT, host = process.env.BOT_TEAM_HOST || (isWin ? '127.0.0.1' : '0.0.0.0') } = {}) {
+export async function startServer({
+  port = PORT,
+  desktop = false,
+  host = process.env.BOT_TEAM_HOST ||
+    (state.settings?.lanAccess ? '0.0.0.0' : desktop ? '127.0.0.1' : isWin ? '127.0.0.1' : '0.0.0.0'),
+} = {}) {
   // 先按设置 / 环境变量 / 系统代理配置出口；系统代理会先做 500ms 连通性检查
   await setupProxy(state.settings?.proxy || '').catch(() => '');
   // 上一轮进程被强杀/崩溃时留下的 CLI 孤儿，先回收，避免白占额度和管道。

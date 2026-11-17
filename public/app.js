@@ -162,6 +162,13 @@ const activeChat = () => chatById(S.activeChatId);
 
 const IS_WIN = window.desktop?.platform === 'win32' || /Windows/i.test(navigator.userAgent || '');
 const MOD_KEY = IS_WIN ? 'Ctrl+' : '⌘';
+const REVEAL_LABEL = IS_WIN ? '在资源管理器中显示' : '在访达中显示';
+const REVEAL_WHERE = IS_WIN ? '资源管理器' : '访达';
+if (IS_WIN) {
+  document.querySelectorAll('[data-pane-act="reveal"]').forEach((el) => {
+    el.textContent = REVEAL_LABEL;
+  });
+}
 document.body.classList.toggle('desktop', !!window.desktop);
 document.body.classList.toggle('win', IS_WIN);
 
@@ -1348,7 +1355,7 @@ function fileCardsHtml(paths) {
           <button type="button" class="fc-open" data-file-menu>打开方式 ▾</button>
           <div class="fc-menu" hidden>
             <button type="button" data-file-act="open">打开</button>
-            <button type="button" data-file-act="reveal">在访达中显示</button>
+            <button type="button" data-file-act="reveal">${REVEAL_LABEL}</button>
             <button type="button" data-file-act="copy">复制路径</button>
           </div>
         </span>
@@ -1399,7 +1406,7 @@ async function hydrateFileCards() {
       const type = c.querySelector('.fc-type');
       if (type) type.innerHTML = '<span class="fc-dot"></span>文件夹';
       const btn = c.querySelector('[data-file-menu]');
-      if (btn) btn.textContent = '在访达中显示 ▾';
+      if (btn) btn.textContent = `${REVEAL_LABEL} ▾`;
       continue;
     }
     const size = c.querySelector('.fc-size');
@@ -1456,7 +1463,7 @@ function openFileMenu(card, btn) {
     isDir ? '' : '<button type="button" data-file-act="preview">在右侧查看</button>'
   }
     <button type="button" data-file-act="open">打开</button>
-    <button type="button" data-file-act="reveal">在访达中显示</button>
+    <button type="button" data-file-act="reveal">${REVEAL_LABEL}</button>
     <button type="button" data-file-act="copy">复制路径</button>`;
   m.hidden = false;
   const r = btn.getBoundingClientRect();
@@ -9386,8 +9393,12 @@ function usageConnectHtml(providers) {
           ? '<button class="btn" id="usageMimoLogin">在 App 内登录 MiMo</button>'
           : ''
       }
-      <button class="btn" id="usageSyncMimo">从浏览器读取 MiMo 登录态</button>
-      <span class="usage-hint">只保存在本机 data/state.json；留空不会清空已有 Key。读取浏览器登录态需要给 Bot Team「完全磁盘访问权限」；不想授权可直接用「在 App 内登录 MiMo」。</span>
+      <button class="btn" id="usageSyncMimo"${IS_WIN ? ' hidden' : ''}>从浏览器读取 MiMo 登录态</button>
+      <span class="usage-hint">${
+        IS_WIN
+          ? '只保存在本机 data/state.json；留空不会清空已有 Key。Windows 下请用「在 App 内登录 MiMo」或手动粘贴 Cookie。'
+          : '只保存在本机 data/state.json；留空不会清空已有 Key。读取浏览器登录态需要给 Bot Team「完全磁盘访问权限」；不想授权可直接用「在 App 内登录 MiMo」。'
+      }</span>
     </div>
   </details>`;
 }
@@ -10885,6 +10896,10 @@ function bind() {
         <label class="check-line" style="margin-top:8px"><input type="checkbox" id="remoteAuto" ${
           S.settings?.remoteAuto ? 'checked' : ''
         } /> 电脑开机后自动开启远程（隧道断了会自动重连）</label>
+        <label class="check-line"><input type="checkbox" id="lanAccess" ${
+          S.settings?.lanAccess ? 'checked' : ''
+        } /> 允许同一局域网内的手机/电脑直接访问（默认只监听本机，更安全）</label>
+        <button type="button" class="btn ghost" id="relaunchApp" hidden>重启 Bot Team 应用局域网设置</button>
         <label class="check-line" id="loginItemRow" hidden><input type="checkbox" id="loginItemOn" /> 电脑开机自动启动 Bot Team</label>
         <div class="field-hint">同一 Wi-Fi 用局域网地址；不在同一网络时用 Tailscale 或公网隧道。链接里带访问令牌，别转发给别人。</div>
       </div>
@@ -11236,6 +11251,11 @@ function bind() {
         }</div>
         ${st.error ? `<div class="remote-error">${esc(st.error)}</div>` : ''}
         ${links.length ? `<div class="remote-links">${links.join('')}</div>` : ''}
+        ${
+          st.lanBound
+            ? ''
+            : '<div class="remote-error">当前只监听本机（127.0.0.1），上面的局域网地址在手机上打不开。打开下方「允许局域网访问」并重启 Bot Team 即可。</div>'
+        }
         <div class="remote-hint">${
           st.tailscaleInstalled
             ? tsLinks.length
@@ -11304,6 +11324,33 @@ function bind() {
           toast(remoteAuto.checked ? '已开启：电脑开着就会自动保持远程可用' : '已关闭自动远程');
         } catch (e) {
           remoteAuto.checked = !remoteAuto.checked;
+          toast(`保存失败：${e.message}`, 'err');
+        }
+      };
+
+    const lanAccess = $('#lanAccess');
+    const relaunchApp = $('#relaunchApp');
+    if (relaunchApp && !window.desktop?.relaunch) relaunchApp.hidden = true;
+    if (relaunchApp)
+      relaunchApp.onclick = () => {
+        window.desktop.relaunch();
+      };
+    if (lanAccess)
+      lanAccess.onchange = async () => {
+        try {
+          const r = await api('/api/settings', {
+            method: 'PATCH',
+            body: { lanAccess: lanAccess.checked },
+          });
+          S.settings.lanAccess = lanAccess.checked;
+          if (r.lanRestart && relaunchApp && window.desktop?.relaunch) relaunchApp.hidden = false;
+          toast(
+            lanAccess.checked
+              ? '已允许局域网访问，重启 Bot Team 后生效'
+              : '已关闭局域网访问，重启 Bot Team 后生效'
+          );
+        } catch (e) {
+          lanAccess.checked = !lanAccess.checked;
           toast(`保存失败：${e.message}`, 'err');
         }
       };
@@ -15474,12 +15521,12 @@ async function renderFile(p, meta) {
     } catch {}
   }
 
-  // 二进制 / Office：先用 macOS Quick Look 生成缩略图
+  // 二进制 / Office：先用系统缩略图服务生成预览（macOS Quick Look / Windows Shell）
   content.innerHTML = `<div class="fv-quicklook"><div class="fv-loading"><span class="fv-spinner"></span>正在生成预览…</div></div>
     <div class="fv-meta-line">${esc(name)} · ${fmtSize(meta.size)}</div>
     <div class="fv-fallback-actions">
       <button type="button" class="btn" id="fvOpenExternal3">用默认应用打开</button>
-      <button type="button" class="btn ghost" id="fvReveal3">在访达中显示</button>
+      <button type="button" class="btn ghost" id="fvReveal3">${REVEAL_LABEL}</button>
     </div>`;
   const openBtn = $('#fvOpenExternal3');
   if (openBtn) openBtn.onclick = () => openLocalFile(p, 'open');
@@ -15495,7 +15542,7 @@ async function renderFile(p, meta) {
   };
   img.onerror = () => {
     if (!box) return;
-    box.innerHTML = `<div class="fv-empty-icon">${icon}</div><div class="fv-empty-title">这个格式暂时不能内嵌预览</div><div class="fv-empty-sub">可以用默认应用打开，或者在访达中查看。</div>`;
+    box.innerHTML = `<div class="fv-empty-icon">${icon}</div><div class="fv-empty-title">这个格式暂时不能内嵌预览</div><div class="fv-empty-sub">可以用默认应用打开，或者在${REVEAL_WHERE}中查看。</div>`;
   };
   img.src = fileThumbUrl(p);
 }
