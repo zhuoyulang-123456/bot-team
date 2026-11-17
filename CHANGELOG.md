@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.11 — 2026-11-17
+
+按各厂商官方价目表重做内置价格表（核对日 2026-11-17），修正用量中心估算与实际账单的偏差。
+
+### 价格表
+
+- DeepSeek：保持官方人民币价（Flash 输入 2 / 输出 8 / 缓存 0.04；Pro 输入 9 / 输出 27 / 缓存 0.3，高峰价，空闲时段减半）
+- OpenAI：按官方美元价 × 汇率重算（GPT-6.1 Sol 2/10、GPT-6.1 Terra 1/5、GPT-6 Astra 10/50、GPT-6 Luna 0.1/0.5、GPT-5.3 Codex 1.75/14、GPT-5.6 Sol 4/20 等）
+- Anthropic：补齐 Fable / Mythos、Opus 5.5、Sonnet 5 / 5.5、Haiku 5.5 等新档位
+- Google：区分 Gemini 4 Carbon / Argon、Gemini 4 Hydrogen、Gemini 3.8 Flash
+- 智谱：GLM-5.3 8/28/2、GLM-5.3-Flash 0.8/2.8/0.23、GLM-5.3-FlashX 2/7/0.57
+- 月之暗面：Kimi K3 20/100/2、K3.1 Pro 22/110/2.2、K2.7-Code 系列
+- MiniMax：M3.1 Flash 1/4/0.1、M3 2.1/8.4/0.42
+- 阿里云百炼：Qwen4 Max、Qwen3.8 Max、Qwen3 Coder Flash
+- 小米 MiMo：V2.6 Pro 3/6/0.025、V2.6 Flash 1/2/0.02
+- 腾讯混元：Hy4 Flash 0.5/2/0.02、Hy4 6/18/0.3、Hy3 1/4/0.25
+- Mistral：Large 4、Medium 3.5、Small 4、Codestral
+- 修正 `glm-5.3-flashx` 被当成 `glm-5.3-flash` 匹配的问题
+
 ## 0.1.10 — 2026-11-17
 
 修复 Windows 下 WorkBuddy 无返回、以及用量中心成本估算与实际账单偏差过大的问题。
