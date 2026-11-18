@@ -18,15 +18,23 @@
 
 ## 下载与安装
 
+> [!IMPORTANT]
+> **macOS 提示“「Bot Team」已损坏，无法打开”不是文件坏了！**  
+> 本项目为开源软件，目前未购买 Apple 开发者公证（$99/年），经浏览器 / 微信 / 隔空投送下载的 App 会被 macOS 自动拦截并误报“已损坏”。  
+> - **推荐：终端一行直接安装（不弹“已损坏”）**：
+>   ```bash
+>   curl -fsSL https://raw.githubusercontent.com/zhuoyulang-123456/bot-team/main/scripts/install-mac.sh | bash
+>   ```
+> - **如果已经手动下载并拖入「应用程序」**：打开「终端」执行下面两句即可正常打开：
+>   ```bash
+>   xattr -cr "/Applications/Bot Team.app"
+>   codesign --force --deep --sign - "/Applications/Bot Team.app"
+>   ```
+
 - Releases：<https://github.com/zhuoyulang-123456/bot-team/releases>
-- macOS：Apple Silicon 选 `Bot-Team-<version>-arm64.dmg`；Intel Mac 选 `Bot-Team-<version>-x64.dmg`
+- macOS：Apple Silicon（M1–M5）选 `Bot-Team-<version>-arm64.dmg`；Intel Mac 选 `Bot-Team-<version>-x64.dmg`
 - Windows 10/11 x64：选 `Bot-Team-<version>-x64.exe`（NSIS 安装包，支持 per-user 安装，无需管理员权限）或 `Bot-Team-<version>-x64-portable.exe`（免安装便携版）
-- 当前包默认未签名/未公证：
-  - macOS 第一次打开如果提示「无法验证开发者」：右键 App →「打开」，或在终端执行：
-    ```bash
-    xattr -dr com.apple.quarantine "/Applications/Bot Team.app"
-    ```
-  - Windows 第一次运行如果弹出 SmartScreen 提示：点「更多信息」→「仍要运行」
+- Windows 第一次运行如果弹出 SmartScreen 提示：点「更多信息」→「仍要运行」
 - 安装后第一次启动会走「本机环境」向导；不装任何 CLI 也能用「自定义 API」开始。
 
 ## 跑起来

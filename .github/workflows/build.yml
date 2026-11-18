@@ -60,4 +60,19 @@ jobs:
           files: |
             release/*.dmg
             release/*.zip
+          body: |
+            > [!IMPORTANT]
+            > **macOS 提示“「Bot Team」已损坏，无法打开”不是文件坏了！**
+            > 这是因为开源软件未购买付费苹果公证，浏览器/微信下载的文件会被 macOS Gatekeeper 拦截。
+            >
+            > **方法一（推荐）终端一键安装最新 Mac 版（不会弹“已损坏”）：**
+            > ```bash
+            > curl -fsSL https://raw.githubusercontent.com/zhuoyulang-123456/bot-team/main/scripts/install-mac.sh | bash
+            > ```
+            >
+            > **方法二：如果已手动下载 DMG 并拖进「应用程序」，在终端执行：**
+            > ```bash
+            > xattr -cr "/Applications/Bot Team.app"
+            > codesign --force --deep --sign - "/Applications/Bot Team.app"
+            > ```
           generate_release_notes: true

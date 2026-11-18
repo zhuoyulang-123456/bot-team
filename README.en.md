@@ -28,15 +28,27 @@ Most AI chat apps give you one assistant in one window. Bot Team is built around
 
 ## Install (unsigned build)
 
-Download the latest DMG from [Releases](https://github.com/zhuoyulang-123456/bot-team/releases):
+### macOS one-line installer (recommended — avoids Gatekeeper "is damaged" warning)
+
+Run in Terminal to automatically download the latest DMG for your Mac (`arm64` / `x64`), install to `/Applications`, clear quarantine attributes, and ad-hoc sign:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zhuoyulang-123456/bot-team/main/scripts/install-mac.sh | bash
+```
+
+### Manual download
+
+Download the latest installer from [Releases](https://github.com/zhuoyulang-123456/bot-team/releases):
 
 - Apple Silicon: `Bot-Team-<version>-arm64.dmg`
 - Intel Mac: `Bot-Team-<version>-x64.dmg`
+- Windows 10/11 x64: `Bot-Team-<version>-x64.exe` or `Bot-Team-<version>-x64-portable.exe`
 
-The current build is **not signed or notarized** (an Apple Developer Program membership is required for that). On first launch macOS may block it. Either right-click the app → **Open**, or run:
+The current macOS build is **not Apple-notarized** (requires an Apple Developer Program membership). Newer macOS versions often report browser/AirDrop-downloaded unsigned apps as **"is damaged and can't be opened"**. After dragging to `/Applications`, run:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Bot Team.app"
+xattr -cr "/Applications/Bot Team.app"
+codesign --force --deep --sign - "/Applications/Bot Team.app"
 ```
 
 The app itself is fully functional; the warning is only Gatekeeper.
